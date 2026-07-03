@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: attendance_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: attendance_admin
+      POSTGRES_PASSWORD: Mar@2025!
+      POSTGRES_DB: attendance_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - attendance_postgres_data:/var/lib/postgresql/data
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: attendance_pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: it@marfields.com
+      PGADMIN_DEFAULT_PASSWORD: Mar@2025!
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+volumes:
+  attendance_postgres_data:
