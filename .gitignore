@@ -12,3 +12,5 @@ deploy/
 deploy-ready/
 azure-source/
 appservice-logs/
+
+.env.docker

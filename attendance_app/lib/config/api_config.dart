@@ -20,7 +20,7 @@ class ApiConfig {
   /// IMPORTANT: on a physical phone, "localhost" means the phone itself!
   /// Use your PC's LAN IP (run `ipconfig` -> IPv4 Address) for real devices.
   /// For Flutter Web / desktop on the same PC, localhost is correct.
-  static const String? manualBaseUrl = 'http://192.168.100.97:3000';
+  static const String? manualBaseUrl = null;
 
   static String get baseUrl {
     if (_envBaseUrl.isNotEmpty) return _envBaseUrl;
