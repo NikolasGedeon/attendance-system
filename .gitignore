@@ -1,19 +1,14 @@
-node_modules/
-dist/
-build/
-.env
-.env.local
-.env.production
+api/.env
+api/.env.*
+!api/.env.example
 
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-.pub-cache/
-.pub/
+**/node_modules/
+**/dist/
+**/build/
+**/.dart_tool/
 
-.vscode/
-.idea/
-
-.DS_Store
-Thumbs.db
-*.log
+*.zip
+deploy/
+deploy-ready/
+azure-source/
+appservice-logs/

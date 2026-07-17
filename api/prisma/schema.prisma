@@ -1,10 +1,196 @@
 generator client {
   provider = "prisma-client-js"
+ binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+model User {
+  id                 String                    @id @default(uuid())
+  fullName           String
+  email              String?                   @unique
+  passwordHash       String?
+  microsoftId        String?                   @unique
+  role               Role                      @default(EMPLOYEE)
+  isActive           Boolean                   @default(true)
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+  locationId         String?
+  authMethod         AuthMethod                @default(CARD)
+  cardAssignedAt     DateTime?
+  cardDisabledAt     DateTime?
+  cardUid            String?                   @unique
+  department         String?
+  employeeCode       String?                   @unique
+  hasMobile          Boolean                   @default(false)
+  cardOtpFailedCount Int                       @default(0)
+  cardOtpLocked      Boolean                   @default(false)
+  phoneNumber        String?
+  requireOtpForCard  Boolean                   @default(false)
+  employeeType       EmployeeType              @default(INTERNAL)
+  positionId         String?
+  attendances        Attendance[]
+  adjustmentLogs     AttendanceAdjustmentLog[]
+  otps               AttendanceOtp[]
+  mobileTokens       MobileAttendanceToken[]
+  location           Location?                 @relation(fields: [locationId], references: [id])
+  position           Position?                 @relation(fields: [positionId], references: [id])
+  devices            UserDevice[]
+
+  @@index([locationId])
+  @@index([cardUid])
+  @@index([employeeCode])
+  @@index([phoneNumber])
+  @@index([positionId])
+}
+
+model Position {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  users     User[]
+}
+
+model Attendance {
+  id             String                    @id @default(uuid())
+  userId         String
+  clockIn        DateTime
+  clockOut       DateTime?
+  latitude       Float?
+  longitude      Float?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+  isEdited       Boolean                   @default(false)
+  kioskInId      String?
+  kioskOutId     String?
+  methodIn       AttendanceMethod?
+  methodOut      AttendanceMethod?
+  notes          String?
+  user           User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adjustmentLogs AttendanceAdjustmentLog[]
+
+  @@index([userId])
+  @@index([clockIn])
+  @@index([clockOut])
+  @@index([kioskInId])
+  @@index([kioskOutId])
+}
+
+model AttendanceAdjustmentLog {
+  id           String            @id @default(uuid())
+  attendanceId String
+  changedById  String
+  oldClockIn   DateTime?
+  oldClockOut  DateTime?
+  newClockIn   DateTime?
+  newClockOut  DateTime?
+  oldLatitude  Float?
+  oldLongitude Float?
+  newLatitude  Float?
+  newLongitude Float?
+  reason       String
+  createdAt    DateTime          @default(now())
+  newMethodIn  AttendanceMethod?
+  newMethodOut AttendanceMethod?
+  oldMethodIn  AttendanceMethod?
+  oldMethodOut AttendanceMethod?
+  attendance   Attendance        @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  changedBy    User              @relation(fields: [changedById], references: [id])
+
+  @@index([attendanceId])
+  @@index([changedById])
+}
+
+model Location {
+  id           String   @id @default(uuid())
+  name         String   @unique
+  latitude     Float
+  longitude    Float
+  radiusMeters Int      @default(150)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  users        User[]
+}
+
+model UserDevice {
+  id         String    @id @default(uuid())
+  userId     String
+  deviceId   String
+  platform   String
+  isTrusted  Boolean   @default(false)
+  lastSeenAt DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@index([userId])
+}
+
+model Kiosk {
+  id         String    @id @default(uuid())
+  name       String
+  location   String?
+  deviceKey  String    @unique
+  isActive   Boolean   @default(true)
+  lastSeenAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+model AttendanceOtp {
+  id        String              @id @default(uuid())
+  userId    String
+  kioskId   String
+  cardUid   String
+  codeHash  String
+  action    AttendanceOtpAction
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int                 @default(0)
+  createdAt DateTime            @default(now())
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([kioskId])
+  @@index([cardUid])
+  @@index([expiresAt])
+  @@index([usedAt])
+}
+
+model MobileAttendanceToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@index([usedAt])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorUserId String?
+  action      String
+  entityType  String?
+  entityId    String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([actorUserId])
+  @@index([action])
+  @@index([entityType])
+  @@index([entityId])
 }
 
 enum Role {
@@ -13,14 +199,24 @@ enum Role {
   EMPLOYEE
 }
 
-model User {
-  id           String   @id @default(uuid())
-  fullName     String
-  email        String   @unique
-  passwordHash String?
-  microsoftId  String?  @unique
-  role         Role     @default(EMPLOYEE)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+enum AuthMethod {
+  CARD
+  MOBILE_QR
+  MANUAL
+}
+
+enum AttendanceMethod {
+  CARD
+  MOBILE_QR
+  MANUAL
+}
+
+enum AttendanceOtpAction {
+  CLOCK_IN
+  CLOCK_OUT
+}
+
+enum EmployeeType {
+  INTERNAL
+  EXTERNAL
 }
