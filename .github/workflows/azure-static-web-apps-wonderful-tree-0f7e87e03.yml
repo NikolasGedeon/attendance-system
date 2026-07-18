@@ -4,14 +4,10 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    types: [opened, synchronize, reopened, closed]
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   build_and_deploy:
-    if: github.event_name == 'push' || github.event.action != 'closed'
     runs-on: ubuntu-latest
     name: Build and Deploy
 
@@ -19,23 +15,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify Flutter entry point exists
+        run: |
+          pwd
+          ls -la
+          ls -la attendance_app
+          ls -la attendance_app/lib
+          test -f attendance_app/lib/main_mobile.dart
+
       - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
+      - name: Show Flutter version
+        run: flutter --version
+
       - name: Install dependencies
-        working-directory: attendance_app
-        run: flutter pub get
+        run: |
+          cd attendance_app
+          flutter pub get
 
       - name: Build Flutter web
-        working-directory: attendance_app
-        run: >
-          flutter build web
-          --release
-          --target lib/main_mobile.dart
-          --dart-define=API_BASE_URL=https://marfields-attendance.azurewebsites.net
+        run: |
+          cd attendance_app
+          flutter build web \
+            --release \
+            --target lib/main_mobile.dart \
+            --dart-define=API_BASE_URL=https://marfields-attendance.azurewebsites.net
+
+      - name: Verify web build
+        run: |
+          test -f attendance_app/build/web/index.html
+          ls -la attendance_app/build/web
 
       - name: Deploy to Azure Static Web Apps
         uses: Azure/static-web-apps-deploy@v1
@@ -47,15 +60,3 @@ jobs:
           api_location: ""
           output_location: ""
           skip_app_build: true
-
-  close_pull_request:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
-    runs-on: ubuntu-latest
-    name: Close Pull Request
-
-    steps:
-      - name: Close Pull Request
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_WONDERFUL_TREE_0F7E87E03 }}
-          action: close
