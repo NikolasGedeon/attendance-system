@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../config/feature_flags.dart';
 import '../models/attendance_status.dart';
 import '../models/user_model.dart';
 import '../services/api_client.dart';
@@ -9,6 +10,7 @@ import '../services/location_service.dart';
 import 'admin/admin_dashboard_screen.dart';
 import 'login_screen.dart';
 import 'mobile/mobile_token_screen.dart';
+import 'mobile/scan_kiosk_qr_screen.dart';
 
 class AttendanceScreen extends StatefulWidget {
   final UserModel user;
@@ -148,8 +150,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               icon: const Icon(Icons.admin_panel_settings),
               tooltip: 'Admin',
               onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                    builder: (_) => const AdminDashboardScreen()),
+                MaterialPageRoute(builder: (_) => const AdminDashboardScreen()),
               ),
             ),
           IconButton(
@@ -312,18 +313,45 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             const SizedBox(height: 16),
             const Center(child: CircularProgressIndicator()),
           ],
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                  builder: (_) => const MobileTokenScreen()),
+          if (enableKioskDisplayedQr) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () async {
+                final clocked = await Navigator.of(context).push<bool>(
+                  MaterialPageRoute(builder: (_) => const ScanKioskQrScreen()),
+                );
+                // The scan may have clocked in/out — refresh the status.
+                if (clocked == true && mounted) _loadStatus();
+              },
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Scan Kiosk QR'),
+                  Text(
+                    'Scan the QR code shown on the attendance kiosk',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                ],
+              ),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
             ),
-            icon: const Icon(Icons.qr_code_2),
-            label: const Text('Send Token to Scanner'),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 16),
+          ],
+          if (enableLegacyEmployeeQrDisplay) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const MobileTokenScreen()),
+              ),
+              icon: const Icon(Icons.qr_code_2),
+              label: const Text('Send Token to Scanner'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
             ),
-          ),
+          ],
         ],
       ],
     );

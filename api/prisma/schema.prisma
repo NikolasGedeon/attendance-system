@@ -36,6 +36,7 @@ model User {
   adjustmentLogs     AttendanceAdjustmentLog[]
   otps               AttendanceOtp[]
   mobileTokens       MobileAttendanceToken[]
+  kioskQrChallenges  KioskQrChallenge[]
   location           Location?                 @relation(fields: [locationId], references: [id])
   position           Position?                 @relation(fields: [positionId], references: [id])
   devices            UserDevice[]
@@ -133,14 +134,37 @@ model UserDevice {
 }
 
 model Kiosk {
-  id         String    @id @default(uuid())
-  name       String
-  location   String?
-  deviceKey  String    @unique
-  isActive   Boolean   @default(true)
-  lastSeenAt DateTime?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  id           String             @id @default(uuid())
+  name         String
+  location     String?
+  deviceKey    String             @unique
+  isActive     Boolean            @default(true)
+  lastSeenAt   DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  qrChallenges KioskQrChallenge[]
+}
+
+/// Short-lived, single-use challenge displayed as a QR on the kiosk and
+/// consumed by the employee phone (kiosk-displays / phone-scans flow).
+/// Follows the MobileAttendanceToken pattern: only the SHA-256 hash of
+/// the token is stored.
+model KioskQrChallenge {
+  id           String               @id @default(uuid())
+  kioskId      String
+  tokenHash    String               @unique
+  expiresAt    DateTime
+  usedAt       DateTime?
+  usedByUserId String?
+  action       AttendanceOtpAction?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  kiosk        Kiosk                @relation(fields: [kioskId], references: [id], onDelete: Cascade)
+  usedByUser   User?                @relation(fields: [usedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([kioskId])
+  @@index([expiresAt])
+  @@index([usedAt])
 }
 
 model AttendanceOtp {

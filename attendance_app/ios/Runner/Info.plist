@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Your location is required to verify you are at your assigned work location when clocking in.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>The camera is used to scan the QR code on the attendance kiosk to clock in or out.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

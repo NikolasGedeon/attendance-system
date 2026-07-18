@@ -1,8 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
+import '../../config/feature_flags.dart';
 import '../../services/api_client.dart';
+import '../../services/kiosk_qr_service.dart';
 import '../../services/kiosk_service.dart';
 
 enum _KioskStage {
@@ -12,6 +16,7 @@ enum _KioskStage {
   adminVerify,
   adminActions,
   mobileToken,
+  kioskQr,
 }
 
 const _defaultReason = 'Employee failed OTP verification';
@@ -34,11 +39,23 @@ class _KioskScreenState extends State<KioskScreen> {
   // Waiting stage
   final _cardController = TextEditingController();
 
-  // Mobile token stage
+  // Mobile token stage (legacy employee-displayed QR flow)
   final _mobileTokenController = TextEditingController();
+
+  // Kiosk-displayed QR stage (new flow)
+  final _kioskQrService = KioskQrService();
+  KioskQrChallenge? _qrChallenge;
+  KioskQrStatus? _qrConsumed;
+  int _qrSecondsLeft = 0;
+  bool _qrLoading = false;
+  String? _qrError;
+  Timer? _qrCountdownTimer;
+  Timer? _qrPollTimer;
+  Timer? _qrSuccessTimer;
 
   // OTP stage
   final _otpController = TextEditingController();
+  final _otpFocusNode = FocusNode();
   String? _otpRequestId;
   String _otpAction = '';
   String? _devOtpCode;
@@ -66,9 +83,11 @@ class _KioskScreenState extends State<KioskScreen> {
   void dispose() {
     _countdownTimer?.cancel();
     _successTimer?.cancel();
+    _stopQrTimers();
     _cardController.dispose();
     _mobileTokenController.dispose();
     _otpController.dispose();
+    _otpFocusNode.dispose();
     _adminCardController.dispose();
     _employeeIdController.dispose();
     _reasonController.dispose();
@@ -82,7 +101,15 @@ class _KioskScreenState extends State<KioskScreen> {
   void _reset() {
     _countdownTimer?.cancel();
     _successTimer?.cancel();
+    _stopQrTimers();
+    // Close the OTP keypad when returning to the scan screen.
+    _otpFocusNode.unfocus();
     setState(() {
+      _qrChallenge = null;
+      _qrConsumed = null;
+      _qrSecondsLeft = 0;
+      _qrLoading = false;
+      _qrError = null;
       _stage = _KioskStage.waiting;
       _busy = false;
       _error = null;
@@ -158,6 +185,13 @@ class _KioskScreenState extends State<KioskScreen> {
           _otpController.clear();
         });
         _startCountdown(result.expiresInSeconds ?? 30);
+        // Focus the OTP field once the stage is rendered so the numeric
+        // keypad opens without the user tapping the field.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _stage == _KioskStage.otp) {
+            _otpFocusNode.requestFocus();
+          }
+        });
       } else {
         _showSuccess(result.action, result.userFullName);
       }
@@ -203,11 +237,115 @@ class _KioskScreenState extends State<KioskScreen> {
             : e.message;
         _showAdminHelp = e.locked;
       });
+      _refocusOtpField();
     } catch (_) {
       setState(() => _error = 'Could not reach the server.');
+      _refocusOtpField();
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Kiosk-displayed QR stage (new flow: kiosk shows QR, phone scans it)
+  // ---------------------------------------------------------------------
+
+  void _stopQrTimers() {
+    _qrCountdownTimer?.cancel();
+    _qrPollTimer?.cancel();
+    _qrSuccessTimer?.cancel();
+  }
+
+  void _startKioskQrStage() {
+    setState(() {
+      _stage = _KioskStage.kioskQr;
+      _error = null;
+    });
+    _requestQrChallenge();
+  }
+
+  Future<void> _requestQrChallenge() async {
+    if (_qrLoading) return;
+    _stopQrTimers();
+    setState(() {
+      _qrLoading = true;
+      _qrError = null;
+      _qrConsumed = null;
+    });
+
+    try {
+      final challenge = await _kioskQrService.createChallenge();
+      if (!mounted || _stage != _KioskStage.kioskQr) return;
+      setState(() {
+        _qrChallenge = challenge;
+        _qrSecondsLeft = challenge.refreshInSeconds;
+        _qrLoading = false;
+      });
+
+      _qrCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (!mounted) return;
+        setState(() => _qrSecondsLeft--);
+        if (_qrSecondsLeft <= 0) {
+          timer.cancel();
+          _requestQrChallenge(); // auto-refresh at expiry
+        }
+      });
+
+      _qrPollTimer = Timer.periodic(
+        const Duration(seconds: 2),
+        (_) => _pollQrStatus(challenge.challengeId),
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _qrLoading = false;
+        _qrError = e.message;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _qrLoading = false;
+        _qrError = 'Could not reach the server.';
+      });
+    }
+  }
+
+  Future<void> _pollQrStatus(String challengeId) async {
+    if (!mounted || _stage != _KioskStage.kioskQr || _qrConsumed != null) {
+      return;
+    }
+    try {
+      final status = await _kioskQrService.challengeStatus(challengeId);
+      if (!mounted ||
+          _stage != _KioskStage.kioskQr ||
+          _qrChallenge?.challengeId != challengeId) {
+        return;
+      }
+      if (status.isConsumed) {
+        _stopQrTimers();
+        setState(() => _qrConsumed = status);
+        // Show the confirmation briefly, then display a fresh QR.
+        _qrSuccessTimer = Timer(const Duration(seconds: 3), () {
+          if (mounted && _stage == _KioskStage.kioskQr) {
+            _requestQrChallenge();
+          }
+        });
+      } else if (status.isExpired) {
+        _requestQrChallenge();
+      }
+    } catch (_) {
+      // Transient poll failure: keep polling; countdown/refresh continues.
+    }
+  }
+
+  /// Keep the OTP field focused after a failed attempt so the user can
+  /// retype immediately (the flow stays on the OTP stage).
+  void _refocusOtpField() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _stage == _KioskStage.otp) {
+        _otpFocusNode.requestFocus();
+      }
+    });
   }
 
   Future<void> _scanMobileToken() async {
@@ -319,7 +457,8 @@ class _KioskScreenState extends State<KioskScreen> {
     }
   }
 
-  Future<void> _clearLock() => _runAdminAction((adminCardUid, employeeId) async {
+  Future<void> _clearLock() =>
+      _runAdminAction((adminCardUid, employeeId) async {
         await _kioskService.adminClearCardLock(
           adminCardUid: adminCardUid,
           employeeUserId: employeeId,
@@ -380,8 +519,7 @@ class _KioskScreenState extends State<KioskScreen> {
                         _error!,
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                          color:
-                              Theme.of(context).colorScheme.onErrorContainer,
+                          color: Theme.of(context).colorScheme.onErrorContainer,
                           fontSize: 16,
                         ),
                       ),
@@ -420,6 +558,8 @@ class _KioskScreenState extends State<KioskScreen> {
         return _buildAdminActions();
       case _KioskStage.mobileToken:
         return _buildMobileToken();
+      case _KioskStage.kioskQr:
+        return _buildKioskQr();
     }
   }
 
@@ -465,21 +605,169 @@ class _KioskScreenState extends State<KioskScreen> {
           textStyle: const TextStyle(fontSize: 18),
         ),
       ),
-      const SizedBox(height: 12),
-      OutlinedButton.icon(
-        onPressed: _busy
-            ? null
-            : () => setState(() {
-                  _stage = _KioskStage.mobileToken;
-                  _error = null;
-                }),
-        icon: const Icon(Icons.smartphone),
-        label: const Text('Mobile Token'),
-        style: OutlinedButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 16),
+      if (enableKioskDisplayedQr) ...[
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: _busy ? null : _startKioskQrStage,
+          icon: const Icon(Icons.qr_code_2),
+          label: const Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Display QR for Clocking'),
+              Text(
+                'Employees scan this QR with the Attendance mobile app',
+                style: TextStyle(fontSize: 11),
+              ),
+            ],
+          ),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+          ),
+        ),
+      ],
+      if (enableLegacyKioskEmployeeQrScan) ...[
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: _busy
+              ? null
+              : () => setState(() {
+                    _stage = _KioskStage.mobileToken;
+                    _error = null;
+                  }),
+          icon: const Icon(Icons.smartphone),
+          label: const Text('Mobile Token'),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+          ),
+        ),
+      ],
+    ];
+  }
+
+  List<Widget> _buildKioskQr() {
+    // Success confirmation (shown ~3s, then a fresh QR appears).
+    final consumed = _qrConsumed;
+    if (consumed != null) {
+      final isIn = consumed.action == 'CLOCK_IN';
+      return [
+        Icon(
+          isIn ? Icons.login : Icons.logout,
+          size: 96,
+          color: Colors.green.shade600,
+        ),
+        const SizedBox(height: 16),
+        Text(
+          isIn ? 'Clocked in' : 'Clocked out',
+          textAlign: TextAlign.center,
+          style: Theme.of(context)
+              .textTheme
+              .headlineMedium
+              ?.copyWith(color: Colors.green.shade700),
+        ),
+        if (consumed.employeeName != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            consumed.employeeName!,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+        ],
+        if (consumed.time != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            _formatQrTime(consumed.time!),
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey.shade600),
+          ),
+        ],
+      ];
+    }
+
+    // Error / retry state.
+    if (_qrError != null) {
+      return [
+        Icon(Icons.wifi_off, size: 72, color: Colors.red.shade400),
+        const SizedBox(height: 16),
+        Text(_qrError!, textAlign: TextAlign.center),
+        const SizedBox(height: 24),
+        FilledButton.icon(
+          onPressed: _qrLoading ? null : _requestQrChallenge,
+          icon: const Icon(Icons.refresh),
+          label: const Text('Try Again'),
+        ),
+        const SizedBox(height: 12),
+        TextButton(onPressed: _reset, child: const Text('Back')),
+      ];
+    }
+
+    final challenge = _qrChallenge;
+    return [
+      Text(
+        'Scan to Clock In / Out',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.headlineSmall,
+      ),
+      const SizedBox(height: 8),
+      const Text(
+        'Open the Attendance app on your phone and tap "Scan Kiosk QR".',
+        textAlign: TextAlign.center,
+      ),
+      const SizedBox(height: 24),
+      Center(
+        child: Container(
+          width: 320,
+          height: 320,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border.all(color: Colors.indigo.shade200, width: 2),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: (_qrLoading || challenge == null)
+              ? const Center(child: CircularProgressIndicator())
+              : QrImageView(
+                  data: challenge.qrPayload,
+                  version: QrVersions.auto,
+                  gapless: true,
+                  backgroundColor: Colors.white,
+                ),
         ),
       ),
+      const SizedBox(height: 16),
+      if (challenge != null && !_qrLoading) ...[
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: LinearProgressIndicator(
+            value: challenge.refreshInSeconds == 0
+                ? 0
+                : (_qrSecondsLeft / challenge.refreshInSeconds).clamp(0.0, 1.0),
+            minHeight: 8,
+            color: _qrSecondsLeft <= 5 ? Colors.orange.shade700 : Colors.indigo,
+            backgroundColor: Colors.grey.shade200,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'New code in $_qrSecondsLeft s',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 12,
+            color: _qrSecondsLeft <= 5
+                ? Colors.orange.shade800
+                : Colors.grey.shade600,
+          ),
+        ),
+      ],
+      const SizedBox(height: 16),
+      TextButton(onPressed: _reset, child: const Text('Back')),
     ];
+  }
+
+  String _formatQrTime(DateTime dt) {
+    final local = dt.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(local.day)}/${two(local.month)}/${local.year} '
+        '${two(local.hour)}:${two(local.minute)}';
   }
 
   List<Widget> _buildMobileToken() {
@@ -568,8 +856,10 @@ class _KioskScreenState extends State<KioskScreen> {
       const SizedBox(height: 24),
       TextField(
         controller: _otpController,
-        autofocus: true,
+        focusNode: _otpFocusNode,
         keyboardType: TextInputType.number,
+        textInputAction: TextInputAction.done,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
         textAlign: TextAlign.center,
         maxLength: 4,
         style: const TextStyle(fontSize: 28, letterSpacing: 12),
@@ -736,7 +1026,8 @@ class _KioskScreenState extends State<KioskScreen> {
             labelText: 'Employee User ID',
             hintText: 'Paste the employee user ID',
             border: OutlineInputBorder(),
-            helperText: 'Employee list could not be loaded — enter the ID manually',
+            helperText:
+                'Employee list could not be loaded — enter the ID manually',
           ),
         ),
       ];
@@ -845,8 +1136,8 @@ class _KioskScreenState extends State<KioskScreen> {
                                               color: Colors.red.shade700),
                                         )
                                       : null,
-                                  onTap: () => Navigator.of(dialogContext)
-                                      .pop(user),
+                                  onTap: () =>
+                                      Navigator.of(dialogContext).pop(user),
                                 );
                               },
                             ),

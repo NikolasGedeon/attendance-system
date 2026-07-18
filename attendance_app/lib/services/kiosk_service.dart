@@ -1,7 +1,12 @@
 import 'api_client.dart';
 
-/// Hardcoded for now; later this moves to kiosk settings.
-const String kioskDeviceKey = 'RECEPTION-KIOSK-01';
+/// Per-tablet kiosk identity. Override at build time for each tablet:
+///   flutter build apk --dart-define=KIOSK_DEVICE_KEY=LOBBY-KIOSK-02 ...
+/// The default keeps the existing reception tablet working unchanged.
+const String kioskDeviceKey = String.fromEnvironment(
+  'KIOSK_DEVICE_KEY',
+  defaultValue: 'RECEPTION-KIOSK-01',
+);
 
 /// Result of POST /kiosk/card-scan.
 /// Either an immediate clock action, or an OTP challenge.
