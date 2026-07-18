@@ -7,6 +7,7 @@ import {
 import {
   AttendanceMethod,
   AttendanceOtpAction,
+  Prisma,
   Role,
 } from '@prisma/client';
 import { createHash, randomInt } from 'crypto';
@@ -134,16 +135,27 @@ export class KioskService {
         throw new BadRequestException('User is already clocked in');
       }
 
-      return this.prisma.attendance.create({
-        data: {
-          userId,
-          clockIn: new Date(),
-          methodIn: method,
-          kioskInId: kioskId,
-          notes,
-          isEdited: isEdited ?? false,
-        },
-      });
+      try {
+        return await this.prisma.attendance.create({
+          data: {
+            userId,
+            clockIn: new Date(),
+            methodIn: method,
+            kioskInId: kioskId,
+            notes,
+            isEdited: isEdited ?? false,
+          },
+        });
+      } catch (error) {
+        // Partial unique index: a concurrent clock-in (any method) won.
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          throw new BadRequestException('User is already clocked in');
+        }
+        throw error;
+      }
     }
 
     const openAttendance = await this.prisma.attendance.findFirst({

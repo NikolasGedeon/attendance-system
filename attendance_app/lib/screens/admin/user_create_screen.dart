@@ -185,8 +185,7 @@ class _UserCreateScreenState extends State<UserCreateScreen> {
                       border: OutlineInputBorder(),
                     ),
                     items: _roles
-                        .map((r) =>
-                            DropdownMenuItem(value: r, child: Text(r)))
+                        .map((r) => DropdownMenuItem(value: r, child: Text(r)))
                         .toList(),
                     onChanged: (v) => setState(() => _role = v!),
                   ),
@@ -295,16 +294,15 @@ class _UserCreateScreenState extends State<UserCreateScreen> {
                     subtitle: const Text(
                         'Ask for an SMS code when clocking in by card'),
                     value: _requireOtpForCard,
-                    onChanged: (v) =>
-                        setState(() => _requireOtpForCard = v),
+                    onChanged: (v) => setState(() => _requireOtpForCard = v),
                   ),
                   const SizedBox(height: 16),
                   if (_error != null) ...[
                     Text(
                       _error!,
                       textAlign: TextAlign.center,
-                      style: TextStyle(
-                          color: Theme.of(context).colorScheme.error),
+                      style:
+                          TextStyle(color: Theme.of(context).colorScheme.error),
                     ),
                     const SizedBox(height: 16),
                   ],
@@ -317,8 +315,7 @@ class _UserCreateScreenState extends State<UserCreateScreen> {
                         ? const SizedBox(
                             height: 20,
                             width: 20,
-                            child:
-                                CircularProgressIndicator(strokeWidth: 2),
+                            child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Text('Create User'),
                   ),

@@ -110,10 +110,8 @@ class _UserEditScreenState extends State<UserEditScreen> {
         email: _emailController.text.trim(),
         role: _role,
         isActive: _isActive,
-        locationId:
-            _selectedLocationId == _none ? null : _selectedLocationId,
-        positionId:
-            _selectedPositionId == _none ? null : _selectedPositionId,
+        locationId: _selectedLocationId == _none ? null : _selectedLocationId,
+        positionId: _selectedPositionId == _none ? null : _selectedPositionId,
         employeeType: _employeeType,
         employeeCode: _employeeCodeController.text.trim(),
         department: _departmentController.text.trim(),
@@ -183,8 +181,7 @@ class _UserEditScreenState extends State<UserEditScreen> {
                       border: OutlineInputBorder(),
                     ),
                     items: _roles
-                        .map((r) =>
-                            DropdownMenuItem(value: r, child: Text(r)))
+                        .map((r) => DropdownMenuItem(value: r, child: Text(r)))
                         .toList(),
                     onChanged: (v) => setState(() => _role = v!),
                   ),
@@ -198,8 +195,8 @@ class _UserEditScreenState extends State<UserEditScreen> {
                     items: _employeeTypes
                         .map((t) => DropdownMenuItem(
                             value: t,
-                            child:
-                                Text(t == 'INTERNAL' ? 'Internal' : 'External')))
+                            child: Text(
+                                t == 'INTERNAL' ? 'Internal' : 'External')))
                         .toList(),
                     onChanged: (v) => setState(() => _employeeType = v!),
                   ),
@@ -300,13 +297,11 @@ class _UserEditScreenState extends State<UserEditScreen> {
                     subtitle: const Text(
                         'Ask for an SMS code when clocking in by card'),
                     value: _requireOtpForCard,
-                    onChanged: (v) =>
-                        setState(() => _requireOtpForCard = v),
+                    onChanged: (v) => setState(() => _requireOtpForCard = v),
                   ),
                   SwitchListTile(
                     title: const Text('Active'),
-                    subtitle:
-                        const Text('Inactive users cannot use the app'),
+                    subtitle: const Text('Inactive users cannot use the app'),
                     value: _isActive,
                     onChanged: (v) => setState(() => _isActive = v),
                   ),
@@ -315,8 +310,8 @@ class _UserEditScreenState extends State<UserEditScreen> {
                     Text(
                       _error!,
                       textAlign: TextAlign.center,
-                      style: TextStyle(
-                          color: Theme.of(context).colorScheme.error),
+                      style:
+                          TextStyle(color: Theme.of(context).colorScheme.error),
                     ),
                     const SizedBox(height: 16),
                   ],
@@ -329,8 +324,7 @@ class _UserEditScreenState extends State<UserEditScreen> {
                         ? const SizedBox(
                             height: 20,
                             width: 20,
-                            child:
-                                CircularProgressIndicator(strokeWidth: 2),
+                            child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Text('Save'),
                   ),

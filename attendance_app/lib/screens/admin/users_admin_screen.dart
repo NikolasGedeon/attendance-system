@@ -90,8 +90,7 @@ class _UsersAdminScreenState extends State<UsersAdminScreen> {
                 contentPadding: EdgeInsets.zero,
                 controlAffinity: ListTileControlAffinity.leading,
                 value: permanent,
-                onChanged: (v) =>
-                    setDialogState(() => permanent = v == true),
+                onChanged: (v) => setDialogState(() => permanent = v == true),
                 title: const Text(
                   'Delete permanently',
                   style: TextStyle(fontWeight: FontWeight.bold),
@@ -113,8 +112,8 @@ class _UsersAdminScreenState extends State<UsersAdminScreen> {
                     'Warning: attendance/working-time records may be legally '
                     'required to be kept. Use permanent delete only for test '
                     'or mistaken entries.',
-                    style: TextStyle(
-                        color: Colors.red.shade900, fontSize: 12.5),
+                    style:
+                        TextStyle(color: Colors.red.shade900, fontSize: 12.5),
                   ),
                 ),
             ],
@@ -129,8 +128,7 @@ class _UsersAdminScreenState extends State<UsersAdminScreen> {
                   backgroundColor:
                       permanent ? Colors.red.shade900 : Colors.red.shade700),
               onPressed: () => Navigator.of(context).pop(permanent),
-              child:
-                  Text(permanent ? 'Delete Permanently' : 'Deactivate'),
+              child: Text(permanent ? 'Delete Permanently' : 'Deactivate'),
             ),
           ],
         ),
@@ -381,8 +379,7 @@ class _UsersAdminScreenState extends State<UsersAdminScreen> {
                   child: SegmentedButton<String>(
                     segments: const [
                       ButtonSegment(value: 'active', label: Text('Active')),
-                      ButtonSegment(
-                          value: 'inactive', label: Text('Inactive')),
+                      ButtonSegment(value: 'inactive', label: Text('Inactive')),
                       ButtonSegment(value: 'all', label: Text('All')),
                     ],
                     selected: {_statusFilter},
@@ -425,8 +422,7 @@ class _UsersAdminScreenState extends State<UsersAdminScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(_error!,
-                  style:
-                      TextStyle(color: Theme.of(context).colorScheme.error)),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
               const SizedBox(height: 16),
               FilledButton(onPressed: _loadUsers, child: const Text('Retry')),
             ],
@@ -463,8 +459,7 @@ class _UsersAdminScreenState extends State<UsersAdminScreen> {
               title: Text(
                 user.fullName,
                 style: TextStyle(
-                  decoration:
-                      user.isActive ? null : TextDecoration.lineThrough,
+                  decoration: user.isActive ? null : TextDecoration.lineThrough,
                 ),
               ),
               subtitle: Text(
@@ -483,8 +478,8 @@ class _UsersAdminScreenState extends State<UsersAdminScreen> {
                       child: Icon(Icons.cancel, color: Colors.grey),
                     ),
                   IconButton(
-                    icon: Icon(Icons.delete_outline,
-                        color: Colors.red.shade700),
+                    icon:
+                        Icon(Icons.delete_outline, color: Colors.red.shade700),
                     tooltip: user.isActive
                         ? 'Deactivate / delete'
                         : 'Delete permanently',

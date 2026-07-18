@@ -1,10 +1,19 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { PassportStrategy } from '@nestjs/passport';
+import { AuthGuard, PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../prisma/prisma.service';
 
+/**
+ * Strategy for the RESTRICTED password-change token issued at first login
+ * (mustChangePassword=true). Accepts ONLY tokens carrying
+ * scope=password_change; the normal JwtStrategy rejects them, so this
+ * token cannot reach attendance or any other endpoint.
+ */
 @Injectable()
-export class JwtStrategy extends PassportStrategy(Strategy) {
+export class PasswordChangeStrategy extends PassportStrategy(
+  Strategy,
+  'password-change',
+) {
   constructor(private readonly prisma: PrismaService) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -14,14 +23,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
-    // Restricted tokens (e.g. password-change scope) must never pass the
-    // normal guard: they cannot access attendance or any other endpoint.
-    if (payload.scope) {
-      throw new UnauthorizedException('Restricted token');
+    if (payload.scope !== 'password_change') {
+      throw new UnauthorizedException('Password-change token required');
     }
 
-    // tokenVersion check: password changes/resets bump the version and
-    // instantly invalidate every previously issued JWT.
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       select: { id: true, isActive: true, tokenVersion: true },
@@ -31,10 +36,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Session is no longer valid');
     }
 
-    return {
-      id: payload.sub,
-      email: payload.email,
-      role: payload.role,
-    };
+    return { id: payload.sub, scope: payload.scope };
   }
 }
+
+@Injectable()
+export class PasswordChangeAuthGuard extends AuthGuard('password-change') {}

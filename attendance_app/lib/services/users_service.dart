@@ -67,8 +67,7 @@ class UsersService {
       if (password != null && password.isNotEmpty) 'password': password,
       if (employeeCode != null && employeeCode.isNotEmpty)
         'employeeCode': employeeCode,
-      if (department != null && department.isNotEmpty)
-        'department': department,
+      if (department != null && department.isNotEmpty) 'department': department,
       if (phoneNumber != null && phoneNumber.isNotEmpty)
         'phoneNumber': phoneNumber,
       if (cardUid != null && cardUid.isNotEmpty) 'cardUid': cardUid,

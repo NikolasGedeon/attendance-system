@@ -1,8 +1,10 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -171,14 +173,30 @@ export class AttendanceService {
       longitude,
     );
 
-    const attendance = await this.prisma.attendance.create({
-      data: {
-        userId,
-        clockIn: new Date(),
-        latitude,
-        longitude,
-      },
-    });
+    let attendance;
+    try {
+      attendance = await this.prisma.attendance.create({
+        data: {
+          userId,
+          clockIn: new Date(),
+          latitude,
+          longitude,
+        },
+      });
+    } catch (error) {
+      // Partial unique index "Attendance_one_open_per_user": a concurrent
+      // request (any method) already opened a record. Deterministic conflict
+      // instead of a 500.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          'You were just clocked in by another action. Refresh your status.',
+        );
+      }
+      throw error;
+    }
 
     return {
       ...this.formatAttendanceRecord(attendance),

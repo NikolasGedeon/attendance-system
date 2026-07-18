@@ -66,4 +66,14 @@ export class UpdateUserDto {
   @IsOptional()
   @IsBoolean()
   hasMobile?: boolean;
+
+  /**
+   * Admin-assigned TEMPORARY password. Setting this forces the user to
+   * choose their own password at next login (mustChangePassword=true)
+   * and revokes all existing sessions.
+   */
+  @IsOptional()
+  @IsString()
+  @MinLength(6)
+  password?: string;
 }

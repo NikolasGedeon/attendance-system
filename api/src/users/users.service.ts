@@ -306,6 +306,9 @@ export class UsersService {
         fullName,
         email,
         passwordHash,
+        // Admin-created passwords are temporary: the user must pick their
+        // own at first login. Card-only users (no password) don't need it.
+        mustChangePassword: !!dto.password,
         role: dto.role ?? Role.EMPLOYEE,
         isActive: dto.isActive ?? true,
         employeeCode,
@@ -802,9 +805,38 @@ export class UsersService {
       await this.validatePosition(data.positionId);
     }
 
+    // Admin-assigned temporary password: hash it, force a change at next
+    // login, and invalidate every existing session (tokenVersion bump +
+    // refresh-token revocation).
+    let temporaryPasswordData = {};
+    if (data.password) {
+      if (!(data.email ?? user.email)) {
+        throw new BadRequestException('A password requires an email address');
+      }
+      temporaryPasswordData = {
+        passwordHash: await bcrypt.hash(data.password, 10),
+        mustChangePassword: true,
+        tokenVersion: { increment: 1 },
+      };
+      await this.prisma.refreshToken.updateMany({
+        where: { userId: id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      await this.prisma.auditLog.create({
+        data: {
+          actorUserId: null,
+          action: 'ADMIN_SET_TEMPORARY_PASSWORD',
+          entityType: 'User',
+          entityId: id,
+          metadata: {},
+        },
+      });
+    }
+
     return this.prisma.user.update({
       where: { id },
       data: {
+        ...temporaryPasswordData,
         ...(data.fullName !== undefined && { fullName: data.fullName.trim() }),
         ...(data.email !== undefined && { email: data.email }),
         ...(data.role !== undefined && { role: data.role }),

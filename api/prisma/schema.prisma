@@ -32,11 +32,16 @@ model User {
   requireOtpForCard  Boolean                   @default(false)
   employeeType       EmployeeType              @default(INTERNAL)
   positionId         String?
+  mustChangePassword Boolean                   @default(true)
+  passwordChangedAt  DateTime?
+  tokenVersion       Int                       @default(0)
   attendances        Attendance[]
   adjustmentLogs     AttendanceAdjustmentLog[]
   otps               AttendanceOtp[]
   mobileTokens       MobileAttendanceToken[]
   kioskQrChallenges  KioskQrChallenge[]
+  passwordResetTokens PasswordResetToken[]
+  refreshTokens      RefreshToken[]
   location           Location?                 @relation(fields: [locationId], references: [id])
   position           Position?                 @relation(fields: [positionId], references: [id])
   devices            UserDevice[]
@@ -200,6 +205,36 @@ model MobileAttendanceToken {
   @@index([tokenHash])
   @@index([expiresAt])
   @@index([usedAt])
+}
+
+/// Email password-reset tokens: only the SHA-256 hash is stored,
+/// 15-minute expiry, single use.
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// Long-lived refresh tokens: only the SHA-256 hash is stored,
+/// rotated on use, revoked on password change/reset/logout.
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model AuditLog {

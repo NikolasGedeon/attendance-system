@@ -171,9 +171,9 @@ class _AuthGateState extends State<AuthGate> {
   late final Future<UserModel?> _sessionFuture = _restoreSession();
 
   Future<UserModel?> _restoreSession() async {
-    final auth = AuthService();
-    if (!await auth.isLoggedIn()) return null;
-    return auth.getSavedUser();
+    // Refresh-token based restore: POST /auth/refresh rotates the pair.
+    // Returns null (and clears storage) when the token is revoked/expired.
+    return AuthService().restoreSession();
   }
 
   @override

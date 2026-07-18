@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
+import '../widgets/password_field.dart';
+import 'auth/change_temporary_password_screen.dart';
+import 'auth/forgot_password_screen.dart';
 import 'start_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -35,15 +38,29 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final user = await AuthService().login(
+      final result = await AuthService().login(
         _emailController.text.trim(),
         _passwordController.text,
       );
       if (!mounted) return;
+
+      // Server-controlled first-login flow: route ONLY on the backend flag.
+      if (result.requiresPasswordChange) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => ChangeTemporaryPasswordScreen(
+              user: result.user,
+              passwordChangeToken: result.passwordChangeToken!,
+            ),
+          ),
+        );
+        return;
+      }
+
       // Route through the app lock so a fresh login also requires
       // fingerprint / face / device PIN before showing attendance.
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => AppLockGate(user: user)),
+        MaterialPageRoute(builder: (_) => AppLockGate(user: result.user)),
       );
     } on ApiException catch (e) {
       setState(() => _error = e.message);
@@ -90,20 +107,25 @@ class _LoginScreenState extends State<LoginScreen> {
                         : null,
                   ),
                   const SizedBox(height: 16),
-                  TextFormField(
+                  PasswordField(
                     controller: _passwordController,
-                    obscureText: true,
-                    autofillHints: const [AutofillHints.password],
-                    decoration: const InputDecoration(
-                      labelText: 'Password',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.lock_outline),
-                    ),
+                    label: 'Password',
+                    textInputAction: TextInputAction.done,
                     validator: (v) =>
                         (v == null || v.isEmpty) ? 'Enter your password' : null,
                     onFieldSubmitted: (_) => _login(),
                   ),
-                  const SizedBox(height: 24),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => const ForgotPasswordScreen()),
+                      ),
+                      child: const Text('Forgot your password?'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
                   if (_error != null) ...[
                     Text(
                       _error!,

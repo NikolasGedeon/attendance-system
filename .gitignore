@@ -10,6 +10,7 @@ api/.env.*
 *.zip
 deploy/
 deploy-ready/
+azure-deploy/
 azure-source/
 appservice-logs/
 
