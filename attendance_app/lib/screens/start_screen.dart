@@ -78,7 +78,8 @@ class StartScreen extends StatelessWidget {
                 _StartCard(
                   icon: Icons.window_sharp,
                   title: 'Microsoft Login',
-                  subtitle: 'Coming soon · Microsoft 365 with Authenticator MFA',
+                  subtitle:
+                      'Coming soon · Microsoft 365 with Authenticator MFA',
                   enabled: false,
                   onTap: () {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -207,20 +208,57 @@ class AppLockGate extends StatefulWidget {
   State<AppLockGate> createState() => _AppLockGateState();
 }
 
-class _AppLockGateState extends State<AppLockGate> {
+class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
+  /// Re-lock only when the app was in the background at least this long,
+  /// so switching apps briefly (or the biometric dialog itself, which
+  /// also pauses the app) does not trigger another prompt.
+  static const _relockAfter = Duration(minutes: 2);
+
   final _lockService = AppLockService();
 
   bool _checking = true;
   bool _unlocked = false;
+  bool _authInProgress = false;
+  String? _notice;
+  DateTime? _pausedAt;
 
   @override
   void initState() {
     super.initState();
-    _tryUnlock();
+    WidgetsBinding.instance.addObserver(this);
+    // First prompt via post-frame callback: never authenticate during build.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _tryUnlock());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _pausedAt ??= DateTime.now();
+    } else if (state == AppLifecycleState.resumed) {
+      final pausedAt = _pausedAt;
+      _pausedAt = null;
+      if (pausedAt != null &&
+          _unlocked &&
+          !_authInProgress &&
+          DateTime.now().difference(pausedAt) >= _relockAfter) {
+        setState(() => _unlocked = false);
+        _tryUnlock();
+      }
+    }
   }
 
   Future<void> _tryUnlock() async {
-    setState(() => _checking = true);
+    if (_authInProgress) return;
+    setState(() {
+      _checking = true;
+      _notice = null;
+    });
 
     if (!await _lockService.isSupported()) {
       // Web or no screen lock configured: let the session through.
@@ -233,12 +271,40 @@ class _AppLockGateState extends State<AppLockGate> {
       return;
     }
 
-    final ok = await _lockService.unlock();
-    if (mounted) {
-      setState(() {
-        _unlocked = ok;
-        _checking = false;
-      });
+    _authInProgress = true;
+    final result = await _lockService.unlock();
+    _authInProgress = false;
+    if (!mounted) return;
+
+    switch (result) {
+      case AppLockResult.success:
+        setState(() {
+          _unlocked = true;
+          _checking = false;
+        });
+      case AppLockResult.cancelled:
+        // Stay on the lock screen; the user chooses to retry or sign out.
+        setState(() {
+          _unlocked = false;
+          _checking = false;
+          _notice = 'Unlock was cancelled or failed. '
+              'Try again, or sign out and use email login.';
+        });
+      case AppLockResult.unavailable:
+        // Nothing enrolled and no device credential: let the session
+        // through, but say so instead of failing silently.
+        setState(() {
+          _unlocked = true;
+          _checking = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No fingerprint, face or screen lock is set up on this '
+              'device — continuing without app lock.',
+            ),
+          ),
+        );
     }
   }
 
@@ -263,8 +329,7 @@ class _AppLockGateState extends State<AppLockGate> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.fingerprint,
-                  size: 80, color: Colors.indigo.shade300),
+              Icon(Icons.fingerprint, size: 80, color: Colors.indigo.shade300),
               const SizedBox(height: 16),
               Text(
                 'App Locked',
@@ -277,6 +342,14 @@ class _AppLockGateState extends State<AppLockGate> {
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.grey.shade600),
               ),
+              if (_notice != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _notice!,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
               const SizedBox(height: 32),
               if (_checking)
                 const CircularProgressIndicator()

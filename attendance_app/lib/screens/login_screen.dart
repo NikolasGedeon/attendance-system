@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
-import 'attendance_screen.dart';
+import 'start_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -40,8 +40,10 @@ class _LoginScreenState extends State<LoginScreen> {
         _passwordController.text,
       );
       if (!mounted) return;
+      // Route through the app lock so a fresh login also requires
+      // fingerprint / face / device PIN before showing attendance.
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => AttendanceScreen(user: user)),
+        MaterialPageRoute(builder: (_) => AppLockGate(user: user)),
       );
     } on ApiException catch (e) {
       setState(() => _error = e.message);
@@ -97,9 +99,8 @@ class _LoginScreenState extends State<LoginScreen> {
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.lock_outline),
                     ),
-                    validator: (v) => (v == null || v.isEmpty)
-                        ? 'Enter your password'
-                        : null,
+                    validator: (v) =>
+                        (v == null || v.isEmpty) ? 'Enter your password' : null,
                     onFieldSubmitted: (_) => _login(),
                   ),
                   const SizedBox(height: 24),
@@ -107,8 +108,8 @@ class _LoginScreenState extends State<LoginScreen> {
                     Text(
                       _error!,
                       textAlign: TextAlign.center,
-                      style: TextStyle(
-                          color: Theme.of(context).colorScheme.error),
+                      style:
+                          TextStyle(color: Theme.of(context).colorScheme.error),
                     ),
                     const SizedBox(height: 16),
                   ],

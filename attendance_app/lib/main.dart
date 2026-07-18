@@ -9,18 +9,22 @@ void main() {
 }
 
 class AttendanceApp extends StatelessWidget {
-  const AttendanceApp({super.key});
+  const AttendanceApp({
+    super.key,
+    this.mode,
+  });
+
+  final AppMode? mode;
+
+  AppMode get _effectiveMode => mode ?? appMode;
 
   Widget get _home {
-    switch (appMode) {
+    switch (_effectiveMode) {
       case AppMode.kiosk:
-        // Company tablet: straight to the kiosk, no login UI.
         return const KioskScreen();
       case AppMode.mobile:
-        // Employee phone: straight to auth flow, no kiosk option.
         return const AuthGate();
       case AppMode.development:
-        // Developer build: choose between both flows.
         return const StartScreen();
     }
   }
