@@ -205,6 +205,18 @@ describe('AuthService password flows', () => {
       await service.forgotPassword({ email: 'test@marfields.com' }, '1.2.3.4');
       expect(email.sendPasswordResetEmail).toHaveBeenCalledTimes(1);
     });
+
+    it('keeps the generic response when the email provider fails (Graph auth/send)', async () => {
+      prisma.user.findUnique.mockResolvedValue(baseUser());
+      email.sendPasswordResetEmail.mockRejectedValue(
+        new Error('graph_send_failed'),
+      );
+      const res = await service.forgotPassword(
+        { email: 'test@marfields.com' },
+        '9.9.9.9',
+      );
+      expect(res.message).toMatch(/If an account exists/);
+    });
   });
 
   describe('resetPassword', () => {
