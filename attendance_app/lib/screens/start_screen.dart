@@ -26,7 +26,18 @@ class StartScreen extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Icon(Icons.access_time_filled, size: 80),
+                Center(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: Image.asset(
+                      'assets/branding/app_logo.png',
+                      width: (MediaQuery.of(context).size.width * 0.45)
+                          .clamp(140.0, 200.0),
+                      fit: BoxFit.contain,
+                      semanticLabel: 'Marfields Attendance App logo',
+                    ),
+                  ),
+                ),
                 const SizedBox(height: 16),
                 Text(
                   'Attendance System',

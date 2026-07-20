@@ -22,6 +22,34 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.1
+  flutter_native_splash: ^2.4.1
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/branding/
+
+# Launcher icons. Mobile and kiosk currently share ONE native applicationId
+# (com.example.attendance_app) with no product flavors, so they share this icon.
+# Change IDs/flavors later during the release-signing stage.
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/branding/app_icon.png
+  remove_alpha_ios: true
+  # Adaptive icon (Android 8+): brand-green background + padded foreground so
+  # the clock ring / wordmark are never cropped by launcher masks.
+  adaptive_icon_background: "#00302A"
+  adaptive_icon_foreground: assets/branding/app_icon_foreground.png
+
+# Native splash. Brand green background with the centered gold logo.
+flutter_native_splash:
+  color: "#00302A"
+  image: assets/branding/splash_logo.png
+  android: true
+  ios: true
+  web: true
+  android_12:
+    color: "#00302A"
+    image: assets/branding/splash_logo.png

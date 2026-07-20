@@ -85,12 +85,17 @@ class _LoginScreenState extends State<LoginScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Icon(Icons.access_time_filled, size: 64),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Attendance App',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.headlineSmall,
+                  Center(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: Image.asset(
+                        'assets/branding/app_logo.png',
+                        width: (MediaQuery.of(context).size.width * 0.5)
+                            .clamp(150.0, 220.0),
+                        fit: BoxFit.contain,
+                        semanticLabel: 'Marfields Attendance App logo',
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 32),
                   TextFormField(

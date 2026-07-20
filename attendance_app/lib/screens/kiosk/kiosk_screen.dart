@@ -565,6 +565,19 @@ class _KioskScreenState extends State<KioskScreen> {
 
   List<Widget> _buildWaiting() {
     return [
+      Center(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: Image.asset(
+            'assets/branding/app_logo.png',
+            width:
+                (MediaQuery.of(context).size.width * 0.35).clamp(140.0, 200.0),
+            fit: BoxFit.contain,
+            semanticLabel: 'Marfields Attendance App logo',
+          ),
+        ),
+      ),
+      const SizedBox(height: 20),
       const Icon(Icons.contactless, size: 96),
       const SizedBox(height: 16),
       Text(
