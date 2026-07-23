@@ -136,6 +136,35 @@ class _UsersAdminScreenState extends State<UsersAdminScreen> {
     );
   }
 
+  Future<void> _resendActivation(UserModel user) async {
+    try {
+      final res = await _usersService.resendActivation(user.id);
+      final status = res['status'] as String?;
+      final msg = switch (status) {
+        'EMAIL_SENT' => 'Activation email sent to ${user.email}.',
+        'EMAIL_FAILED' => 'Activation email could not be sent.',
+        'ALREADY_ACTIVATED' => '${user.fullName} is already activated.',
+        'NO_EMAIL' => 'This user has no email address.',
+        _ => 'Done.',
+      };
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+      }
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not reach the server.')),
+        );
+      }
+    }
+  }
+
   Future<void> _deleteOne(UserModel user) async {
     final permanent = await _confirmDelete(1);
     if (permanent == null) return;
@@ -476,6 +505,12 @@ class _UsersAdminScreenState extends State<UsersAdminScreen> {
                     const Padding(
                       padding: EdgeInsets.only(right: 4),
                       child: Icon(Icons.cancel, color: Colors.grey),
+                    ),
+                  if (user.isActive && user.email.isNotEmpty)
+                    IconButton(
+                      icon: const Icon(Icons.mark_email_read_outlined),
+                      tooltip: 'Resend activation email',
+                      onPressed: () => _resendActivation(user),
                     ),
                   IconButton(
                     icon:

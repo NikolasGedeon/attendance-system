@@ -88,7 +88,7 @@ class _UserCreateScreenState extends State<UserCreateScreen> {
       _error = null;
     });
     try {
-      final user = await _usersService.createUser(
+      final result = await _usersService.createUser(
         fullName: _nameController.text.trim(),
         email: _emailController.text.trim(),
         password: _passwordController.text,
@@ -105,8 +105,23 @@ class _UserCreateScreenState extends State<UserCreateScreen> {
         employeeType: _employeeType,
       );
       if (!mounted) return;
+      final name = result.user.fullName;
+      final msg = switch (result.onboardingStatus) {
+        'EMAIL_SENT' => 'User "$name" created and welcome email sent.',
+        'EMAIL_FAILED' =>
+          'User "$name" created, but the welcome email failed. You can resend it from the users list.',
+        'ALREADY_ACTIVATED' => 'User "$name" created with a temporary password.',
+        'NO_EMAIL' =>
+          'User "$name" created without email; no activation email sent.',
+        _ => 'User "$name" created.',
+      };
+      final failed = result.onboardingStatus == 'EMAIL_FAILED';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('User "${user.fullName}" created')),
+        SnackBar(
+          content: Text(msg),
+          backgroundColor: failed ? Colors.orange.shade800 : null,
+          duration: Duration(seconds: failed ? 6 : 4),
+        ),
       );
       Navigator.of(context).pop(true);
     } on ApiException catch (e) {

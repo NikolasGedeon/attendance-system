@@ -11,11 +11,24 @@ import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { EmailService } from '../email/email.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ActivateAccountDto } from './dto/activate-account.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { assertPasswordPair } from './password-policy.util';
+
+/** Untyped Prisma accessor for models added in the Stage 3 migration
+ * (UserSecurityToken) and new User columns — real types appear after
+ * `prisma generate` runs against the updated schema. */
+type PrismaLoose = {
+  userSecurityToken: any;
+  user: any;
+  refreshToken: any;
+  auditLog: any;
+  $transaction: (ops: any[]) => Promise<any>;
+};
 
 /** Token lifetimes. Access-token TTL lives in auth.module signOptions. */
 const REFRESH_TOKEN_DAYS = 30;
@@ -118,14 +131,17 @@ export class AuthService {
   }
 
   private validateNewPasswordPair(newPassword: string, confirmPassword: string) {
-    if (newPassword !== confirmPassword) {
-      throw new BadRequestException('Passwords do not match');
-    }
-    if (newPassword.length < 8) {
-      throw new BadRequestException(
-        'Password must be at least 8 characters long',
-      );
-    }
+    // Shared policy (min length 8, confirmation match) — see password-policy.util.
+    assertPasswordPair(newPassword, confirmPassword);
+  }
+
+  /** Masks an email for safe display, e.g. "n***@example.com". */
+  private maskEmail(email: string | null): string {
+    if (!email) return '';
+    const [local, domain] = email.split('@');
+    if (!domain) return '***';
+    const first = local.slice(0, 1);
+    return `${first}***@${domain}`;
   }
 
   /**
@@ -200,14 +216,43 @@ export class AuthService {
       where: { email },
     });
 
-    if (!user || !user.passwordHash || !user.isActive) {
-      throw new UnauthorizedException('Invalid email or password');
+    // Unknown email → generic invalid credentials (no enumeration).
+    if (!user) {
+      throw new UnauthorizedException({
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid email or password',
+      });
+    }
+    // Deactivated account.
+    if (!user.isActive) {
+      throw new UnauthorizedException({
+        code: 'ACCOUNT_INACTIVE',
+        message: 'Your account is inactive. Please contact your administrator.',
+      });
+    }
+    // Pending activation (new email users). Existing users default isActivated=true.
+    if ((user as { isActivated?: boolean }).isActivated === false) {
+      throw new UnauthorizedException({
+        code: 'ACCOUNT_ACTIVATION_REQUIRED',
+        message:
+          'Please activate your account using the link in your welcome email.',
+      });
+    }
+    // Activated/card-only user with no usable password → generic message.
+    if (!user.passwordHash) {
+      throw new UnauthorizedException({
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid email or password',
+      });
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
 
     if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid email or password');
+      throw new UnauthorizedException({
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid email or password',
+      });
     }
 
     // Server-controlled first-login flow: the ONLY signal is the DB flag.
@@ -224,6 +269,141 @@ export class AuthService {
     }
 
     return this.sessionResponse(user);
+  }
+
+  // -------------------------------------------------------------------
+  // Account activation (Stage 3)
+  // -------------------------------------------------------------------
+
+  /** Public: set the first password and activate the account via a one-time token. */
+  async activateAccount(dto: ActivateAccountDto) {
+    assertPasswordPair(dto.password, dto.confirmPassword);
+
+    const db = this.prisma as unknown as PrismaLoose;
+    const tokenHash = this.sha256((dto.token || '').trim());
+    const record = await db.userSecurityToken.findUnique({
+      where: { tokenHash },
+      include: { user: true },
+    });
+
+    const reject = (code: string, message: string, userId?: string) => {
+      if (userId) {
+        void db.auditLog
+          .create({
+            data: {
+              actorUserId: userId,
+              action: 'ACTIVATION_REJECTED',
+              entityType: 'User',
+              entityId: userId,
+              metadata: { reason: code },
+            },
+          })
+          .catch(() => undefined);
+      }
+      throw new BadRequestException({ code, message });
+    };
+
+    if (!record || record.purpose !== 'ACCOUNT_ACTIVATION' || record.invalidatedAt) {
+      reject('ACTIVATION_TOKEN_INVALID', 'This activation link is invalid.');
+    }
+    if (record.usedAt) {
+      reject(
+        'ACTIVATION_TOKEN_USED',
+        'This activation link has already been used.',
+        record.userId,
+      );
+    }
+    if (new Date(record.expiresAt) <= new Date()) {
+      reject(
+        'ACTIVATION_TOKEN_EXPIRED',
+        'This activation link has expired. Ask your administrator to resend it.',
+        record.userId,
+      );
+    }
+    const user = record.user;
+    if (!user || !user.isActive) {
+      reject(
+        'ACCOUNT_INACTIVE',
+        'Your account is inactive. Please contact your administrator.',
+        record.userId,
+      );
+    }
+    if (user.isActivated) {
+      reject(
+        'ALREADY_ACTIVATED',
+        'This account is already activated. Please log in.',
+        record.userId,
+      );
+    }
+
+    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const now = new Date();
+    await db.$transaction([
+      db.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash,
+          isActivated: true,
+          activatedAt: now,
+          mustChangePassword: false,
+          passwordChangedAt: now,
+          tokenVersion: { increment: 1 },
+        },
+      }),
+      db.userSecurityToken.update({
+        where: { id: record.id },
+        data: { usedAt: now },
+      }),
+      db.userSecurityToken.updateMany({
+        where: {
+          userId: user.id,
+          purpose: 'ACCOUNT_ACTIVATION',
+          usedAt: null,
+          invalidatedAt: null,
+          id: { not: record.id },
+        },
+        data: { invalidatedAt: now },
+      }),
+      db.refreshToken.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: now },
+      }),
+      db.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'ACCOUNT_ACTIVATED',
+          entityType: 'User',
+          entityId: user.id,
+        },
+      }),
+    ]);
+
+    // Require a normal login afterwards (no tokens returned here).
+    return { success: true, message: 'Account activated successfully.' };
+  }
+
+  /** Public: safe pre-check for the activation link (no user PII beyond a masked email). */
+  async activationStatus(token: string) {
+    const db = this.prisma as unknown as PrismaLoose;
+    const record = await db.userSecurityToken.findUnique({
+      where: { tokenHash: this.sha256((token || '').trim()) },
+      include: { user: true },
+    });
+    if (!record || record.purpose !== 'ACCOUNT_ACTIVATION' || record.invalidatedAt) {
+      return { valid: false, reason: 'ACTIVATION_TOKEN_INVALID' };
+    }
+    if (record.usedAt) return { valid: false, reason: 'ACTIVATION_TOKEN_USED' };
+    if (new Date(record.expiresAt) <= new Date()) {
+      return { valid: false, reason: 'ACTIVATION_TOKEN_EXPIRED' };
+    }
+    if (!record.user || !record.user.isActive) {
+      return { valid: false, reason: 'ACCOUNT_INACTIVE' };
+    }
+    return {
+      valid: true,
+      expiresAt: record.expiresAt,
+      emailMasked: this.maskEmail(record.user.email),
+    };
   }
 
   // -------------------------------------------------------------------

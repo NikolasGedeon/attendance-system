@@ -75,6 +75,15 @@ export class UsersController {
     return this.usersService.importUsers(file, req.user?.id ?? null);
   }
 
+  /** Resend the welcome/activation email (ADMIN+MANAGER; class guards apply). */
+  @Post(':id/resend-activation')
+  resendActivation(
+    @Param('id') id: string,
+    @Request() req: { user?: { id?: string } },
+  ) {
+    return this.usersService.resendActivation(id, req.user?.id ?? null);
+  }
+
   /**
    * PERMANENT delete: removes the user and all their attendance history.
    * Irreversible. ADMIN only.

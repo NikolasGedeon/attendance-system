@@ -4,10 +4,12 @@ import {
   Get,
   Ip,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { ActivateAccountDto } from './dto/activate-account.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
@@ -75,5 +77,17 @@ export class AuthController {
   @Post('reset-password')
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  /** Public: set the first password using the one-time activation token. */
+  @Post('activate-account')
+  activateAccount(@Body() dto: ActivateAccountDto) {
+    return this.authService.activateAccount(dto);
+  }
+
+  /** Public: safe pre-check of an activation link before showing the form. */
+  @Get('activation-status')
+  activationStatus(@Query('token') token: string) {
+    return this.authService.activationStatus(token);
   }
 }

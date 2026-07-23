@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'config/app_mode.dart';
+import 'screens/auth/activate_account_screen.dart';
 import 'screens/auth/reset_password_screen.dart';
 import 'screens/kiosk/kiosk_screen.dart';
 import 'screens/start_screen.dart';
@@ -28,10 +29,15 @@ class AttendanceApp extends StatelessWidget {
     if (kIsWeb) {
       final uri = Uri.base;
       final token = uri.queryParameters['token'];
-      if (token != null &&
-          token.isNotEmpty &&
-          uri.path.endsWith('/reset-password')) {
-        return ResetPasswordScreen(token: token);
+      if (token != null && token.isNotEmpty) {
+        if (uri.path.endsWith('/reset-password')) {
+          return ResetPasswordScreen(token: token);
+        }
+        // Welcome-email deep link:
+        // https://attendance.marfields.com/activate-account?token=...
+        if (uri.path.endsWith('/activate-account')) {
+          return ActivateAccountScreen(token: token);
+        }
       }
     }
 

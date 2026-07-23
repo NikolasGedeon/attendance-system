@@ -9,42 +9,49 @@ datasource db {
 }
 
 model User {
-  id                  String                    @id @default(uuid())
-  fullName            String
-  email               String?                   @unique
-  passwordHash        String?
-  microsoftId         String?                   @unique
-  role                Role                      @default(EMPLOYEE)
-  isActive            Boolean                   @default(true)
-  createdAt           DateTime                  @default(now())
-  updatedAt           DateTime                  @updatedAt
-  locationId          String?
-  authMethod          AuthMethod                @default(CARD)
-  cardAssignedAt      DateTime?
-  cardDisabledAt      DateTime?
-  cardUid             String?                   @unique
-  department          String?
-  employeeCode        String?                   @unique
-  hasMobile           Boolean                   @default(false)
-  cardOtpFailedCount  Int                       @default(0)
-  cardOtpLocked       Boolean                   @default(false)
-  phoneNumber         String?
-  requireOtpForCard   Boolean                   @default(false)
-  employeeType        EmployeeType              @default(INTERNAL)
-  positionId          String?
-  mustChangePassword  Boolean                   @default(true)
-  passwordChangedAt   DateTime?
-  tokenVersion        Int                       @default(0)
-  attendances         Attendance[]
-  adjustmentLogs      AttendanceAdjustmentLog[]
-  otps                AttendanceOtp[]
-  mobileTokens        MobileAttendanceToken[]
-  kioskQrChallenges   KioskQrChallenge[]
-  passwordResetTokens PasswordResetToken[]
-  refreshTokens       RefreshToken[]
-  location            Location?                 @relation(fields: [locationId], references: [id])
-  position            Position?                 @relation(fields: [positionId], references: [id])
-  devices             UserDevice[]
+  id                    String                    @id @default(uuid())
+  fullName              String
+  email                 String?                   @unique
+  passwordHash          String?
+  microsoftId           String?                   @unique
+  role                  Role                      @default(EMPLOYEE)
+  isActive              Boolean                   @default(true)
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  locationId            String?
+  authMethod            AuthMethod                @default(CARD)
+  cardAssignedAt        DateTime?
+  cardDisabledAt        DateTime?
+  cardUid               String?                   @unique
+  department            String?
+  employeeCode          String?                   @unique
+  hasMobile             Boolean                   @default(false)
+  cardOtpFailedCount    Int                       @default(0)
+  cardOtpLocked         Boolean                   @default(false)
+  phoneNumber           String?
+  requireOtpForCard     Boolean                   @default(false)
+  employeeType          EmployeeType              @default(INTERNAL)
+  positionId            String?
+  mustChangePassword    Boolean                   @default(true)
+  passwordChangedAt     DateTime?
+  tokenVersion          Int                       @default(0)
+  // Account activation (Stage 3). Defaults keep every EXISTING user activated.
+  isActivated           Boolean                   @default(true)
+  activatedAt           DateTime?
+  lastActivationEmailAt DateTime?
+  activationEmailStatus String?
+  activationEmailError  String?
+  attendances           Attendance[]
+  adjustmentLogs        AttendanceAdjustmentLog[]
+  otps                  AttendanceOtp[]
+  mobileTokens          MobileAttendanceToken[]
+  kioskQrChallenges     KioskQrChallenge[]
+  passwordResetTokens   PasswordResetToken[]
+  refreshTokens         RefreshToken[]
+  securityTokens        UserSecurityToken[]
+  location              Location?                 @relation(fields: [locationId], references: [id])
+  position              Position?                 @relation(fields: [positionId], references: [id])
+  devices               UserDevice[]
 
   @@index([locationId])
   @@index([cardUid])
@@ -232,6 +239,26 @@ model PasswordResetToken {
   @@index([expiresAt])
 }
 
+/// Purpose-scoped single-use security tokens (Stage 3). Only the SHA-256 hash
+/// is stored; the raw token is never persisted or logged. Used for account
+/// activation now; PASSWORD_RESET is reserved for a future consolidation and
+/// is NOT used yet (password reset stays on PasswordResetToken).
+model UserSecurityToken {
+  id            String               @id @default(uuid())
+  userId        String
+  purpose       SecurityTokenPurpose
+  tokenHash     String               @unique
+  expiresAt     DateTime
+  usedAt        DateTime?
+  invalidatedAt DateTime?
+  createdById   String?
+  createdAt     DateTime             @default(now())
+  user          User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@index([expiresAt])
+}
+
 /// Long-lived refresh tokens: only the SHA-256 hash is stored,
 /// rotated on use, revoked on password change/reset/logout.
 model RefreshToken {
@@ -288,4 +315,9 @@ enum AttendanceOtpAction {
 enum EmployeeType {
   INTERNAL
   EXTERNAL
+}
+
+enum SecurityTokenPurpose {
+  ACCOUNT_ACTIVATION
+  PASSWORD_RESET
 }

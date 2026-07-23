@@ -22,6 +22,10 @@ class ApiException implements Exception {
 
   int? get attemptsRemaining => (data?['attemptsRemaining'] as num?)?.toInt();
 
+  /// Stable machine-readable error code from the backend body, if present
+  /// (e.g. ACCOUNT_ACTIVATION_REQUIRED, ACTIVATION_TOKEN_EXPIRED).
+  String? get code => data?['code'] as String?;
+
   @override
   String toString() => message;
 }

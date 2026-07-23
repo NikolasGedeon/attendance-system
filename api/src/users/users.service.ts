@@ -6,11 +6,36 @@ import {
 } from '@nestjs/common';
 import { AuthMethod, EmployeeType, Role } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomBytes } from 'crypto';
 import * as ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
+import { EmailService } from '../email/email.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+
+/** Hours an activation link stays valid (business-confirmed 48h). */
+const ACTIVATION_TTL_HOURS = Number(
+  process.env.USER_ACTIVATION_TOKEN_TTL_HOURS ?? 48,
+);
+/** Resend cooldown, enforced via the persisted lastActivationEmailAt timestamp. */
+const RESEND_COOLDOWN_SECONDS = Number(
+  process.env.ACTIVATION_RESEND_COOLDOWN_SECONDS ?? 60,
+);
+
+/** Untyped Prisma accessor for the Stage 3 model/columns (real types after `prisma generate`). */
+type ActivationDb = {
+  userSecurityToken: any;
+  user: any;
+  auditLog: any;
+};
+
+type OnboardingStatus =
+  | 'EMAIL_SENT'
+  | 'EMAIL_FAILED'
+  | 'NO_EMAIL'
+  | 'ACTIVATION_PENDING'
+  | 'ALREADY_ACTIVATED';
 
 // Every users response uses this select: no passwordHash, location included.
 const userSelect = {
@@ -43,7 +68,94 @@ export interface ImportRowResult {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly emailService: EmailService,
+  ) {}
+
+  private sha256(value: string): string {
+    return createHash('sha256').update(value).digest('hex');
+  }
+
+  /**
+   * Issues a fresh 48h ACCOUNT_ACTIVATION token (prior ones invalidated),
+   * sends the welcome email, and records the outcome on the user.
+   * Returns the onboarding status; never returns the raw token or link.
+   */
+  private async issueActivationAndEmail(
+    user: { id: string; fullName: string; email: string },
+    actorUserId?: string,
+  ): Promise<{ status: OnboardingStatus; activationExpiresAt: Date }> {
+    const db = this.prisma as unknown as ActivationDb;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + ACTIVATION_TTL_HOURS * 3600 * 1000);
+    const rawToken = randomBytes(32).toString('base64url');
+
+    // Invalidate any outstanding activation tokens, then create the new one.
+    await db.userSecurityToken.updateMany({
+      where: {
+        userId: user.id,
+        purpose: 'ACCOUNT_ACTIVATION',
+        usedAt: null,
+        invalidatedAt: null,
+      },
+      data: { invalidatedAt: now },
+    });
+    await db.userSecurityToken.create({
+      data: {
+        userId: user.id,
+        purpose: 'ACCOUNT_ACTIVATION',
+        tokenHash: this.sha256(rawToken),
+        expiresAt,
+        createdById: actorUserId ?? null,
+      },
+    });
+    await db.auditLog.create({
+      data: {
+        actorUserId: actorUserId ?? null,
+        action: 'ACTIVATION_TOKEN_CREATED',
+        entityType: 'User',
+        entityId: user.id,
+      },
+    });
+
+    let status: OnboardingStatus = 'EMAIL_SENT';
+    let errorSummary: string | null = null;
+    try {
+      await this.emailService.sendWelcomeActivationEmail(
+        user.email,
+        user.fullName,
+        rawToken,
+        ACTIVATION_TTL_HOURS,
+      );
+    } catch (e: any) {
+      status = 'EMAIL_FAILED';
+      // Store a SAFE summary only — never provider internals / token / URL.
+      errorSummary =
+        e?.response?.code === 'ACTIVATION_URL_NOT_CONFIGURED'
+          ? 'Activation URL is not configured.'
+          : 'Welcome email could not be sent.';
+    }
+
+    await db.user.update({
+      where: { id: user.id },
+      data: {
+        lastActivationEmailAt: now,
+        activationEmailStatus: status,
+        activationEmailError: errorSummary,
+      },
+    });
+    await db.auditLog.create({
+      data: {
+        actorUserId: actorUserId ?? null,
+        action: status === 'EMAIL_SENT' ? 'ACTIVATION_EMAIL_SENT' : 'ACTIVATION_EMAIL_FAILED',
+        entityType: 'User',
+        entityId: user.id,
+      },
+    });
+
+    return { status, activationExpiresAt: expiresAt };
+  }
 
   async getUsers(status?: string) {
     const normalized = (status || 'all').toLowerCase();
@@ -301,14 +413,19 @@ export class UsersService {
       ? await bcrypt.hash(dto.password, 10)
       : null;
 
-    return this.prisma.user.create({
+    // Activation applies ONLY to an email user created without a password.
+    // - email + no password → pending activation (isActivated=false).
+    // - password supplied   → existing temporary-password flow (activated).
+    // - no email            → card-only user, no activation email.
+    const needsActivation = !!email && !dto.password;
+
+    const user = await this.prisma.user.create({
       data: {
         fullName,
         email,
         passwordHash,
-        // Admin-created passwords are temporary: the user must pick their
-        // own at first login. Card-only users (no password) don't need it.
         mustChangePassword: !!dto.password,
+        isActivated: !needsActivation,
         role: dto.role ?? Role.EMPLOYEE,
         isActive: dto.isActive ?? true,
         employeeCode,
@@ -321,9 +438,103 @@ export class UsersService {
         employeeType: dto.employeeType ?? EmployeeType.INTERNAL,
         positionId: dto.positionId ?? null,
         locationId: dto.locationId ?? null,
-      },
+      } as any,
       select: userSelect,
     });
+
+    await (this.prisma as unknown as ActivationDb).auditLog.create({
+      data: {
+        action: 'USER_CREATED',
+        entityType: 'User',
+        entityId: (user as { id: string }).id,
+      },
+    });
+
+    let onboarding: {
+      status: OnboardingStatus;
+      email: string | null;
+      activationExpiresAt: Date | null;
+    };
+    if (needsActivation) {
+      const result = await this.issueActivationAndEmail({
+        id: (user as { id: string }).id,
+        fullName,
+        email: email as string,
+      });
+      onboarding = {
+        status: result.status,
+        email,
+        activationExpiresAt: result.activationExpiresAt,
+      };
+    } else if (dto.password) {
+      onboarding = {
+        status: 'ALREADY_ACTIVATED',
+        email,
+        activationExpiresAt: null,
+      };
+    } else {
+      onboarding = { status: 'NO_EMAIL', email: null, activationExpiresAt: null };
+    }
+
+    return {
+      user: { ...user, isActivated: !needsActivation },
+      onboarding,
+    };
+  }
+
+  /**
+   * Admin/manager: resend the activation email (new 48h token; prior ones
+   * invalidated). Cooldown is enforced via the persisted lastActivationEmailAt
+   * so it holds across Azure instances. Never returns the token or link.
+   */
+  async resendActivation(id: string, actorUserId: string | null) {
+    const user = (await this.prisma.user.findUnique({ where: { id } })) as any;
+    if (!user) throw new NotFoundException('User not found');
+    if (!user.email) {
+      return { status: 'NO_EMAIL' as OnboardingStatus, activationExpiresAt: null };
+    }
+    if (!user.isActive) {
+      throw new BadRequestException('User is inactive.');
+    }
+    if (user.isActivated) {
+      return {
+        status: 'ALREADY_ACTIVATED' as OnboardingStatus,
+        activationExpiresAt: null,
+      };
+    }
+
+    // Persisted-timestamp cooldown (works across instances).
+    if (user.lastActivationEmailAt) {
+      const elapsed = (Date.now() - new Date(user.lastActivationEmailAt).getTime()) / 1000;
+      if (elapsed < RESEND_COOLDOWN_SECONDS) {
+        await (this.prisma as unknown as ActivationDb).auditLog.create({
+          data: {
+            actorUserId,
+            action: 'ACTIVATION_RESEND_RATE_LIMITED',
+            entityType: 'User',
+            entityId: id,
+          },
+        });
+        throw new BadRequestException({
+          code: 'RATE_LIMITED',
+          message: `Please wait before resending (cooldown ${RESEND_COOLDOWN_SECONDS}s).`,
+        });
+      }
+    }
+
+    const result = await this.issueActivationAndEmail(
+      { id: user.id, fullName: user.fullName, email: user.email },
+      actorUserId ?? undefined,
+    );
+    await (this.prisma as unknown as ActivationDb).auditLog.create({
+      data: {
+        actorUserId,
+        action: 'ACTIVATION_EMAIL_RESENT',
+        entityType: 'User',
+        entityId: id,
+      },
+    });
+    return result;
   }
 
   /**

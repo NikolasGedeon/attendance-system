@@ -126,6 +126,32 @@ class AuthService {
     return data['message'] as String? ?? 'Password has been reset.';
   }
 
+  /// GET /auth/activation-status — safe pre-check of a welcome-email link.
+  /// Returns the raw map: {valid, expiresAt?, emailMasked?, reason?}.
+  Future<Map<String, dynamic>> activationStatus(String token) async {
+    final data = await _api.get(
+      '/auth/activation-status?token=${Uri.encodeQueryComponent(token)}',
+    ) as Map<String, dynamic>;
+    return data;
+  }
+
+  /// POST /auth/activate-account — set the first password via the one-time link.
+  Future<void> activateAccount({
+    required String token,
+    required String password,
+    required String confirmPassword,
+  }) async {
+    await _api.post(
+      '/auth/activate-account',
+      body: {
+        'token': token,
+        'password': password,
+        'confirmPassword': confirmPassword,
+      },
+      auth: false,
+    );
+  }
+
   /// Session restore at app start: refresh-token based. Returns the user
   /// on success; clears storage and returns null when the refresh token
   /// is missing/revoked/expired.

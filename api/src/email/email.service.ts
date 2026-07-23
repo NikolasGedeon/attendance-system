@@ -57,6 +57,122 @@ export class EmailService {
   }
 
   // -------------------------------------------------------------------
+  // Account activation (Stage 3) — welcome email
+  // -------------------------------------------------------------------
+
+  /**
+   * Activation link base, from ATTENDANCE_ACTIVATION_URL or derived from
+   * ATTENDANCE_WEB_URL (…/activate-account). Undefined when neither is set.
+   */
+  get activationUrlBase(): string | undefined {
+    const explicit = this.env('ATTENDANCE_ACTIVATION_URL');
+    if (explicit) return explicit;
+    const web = this.env('ATTENDANCE_WEB_URL');
+    if (web) return `${web.replace(/\/+$/, '')}/activate-account`;
+    return undefined;
+  }
+
+  /** True when an activation link can be built (used by callers to pre-check). */
+  get activationConfigured(): boolean {
+    return !!this.activationUrlBase;
+  }
+
+  /**
+   * Sends the branded welcome / account-activation email (HTML + plain text).
+   * The raw token and the tokenized link are NEVER logged.
+   * Throws when the activation URL is not configured so the caller can mark
+   * onboarding EMAIL_FAILED with a safe reason.
+   */
+  async sendWelcomeActivationEmail(
+    to: string,
+    fullName: string,
+    rawToken: string,
+    expiresInHours: number,
+  ): Promise<void> {
+    const base = this.activationUrlBase;
+    if (!base) {
+      throw new BadRequestException({
+        code: 'ACTIVATION_URL_NOT_CONFIGURED',
+        message:
+          'Activation URL is not configured (set ATTENDANCE_ACTIVATION_URL or ATTENDANCE_WEB_URL).',
+      });
+    }
+    const link = `${base}${base.includes('?') ? '&' : '?'}token=${encodeURIComponent(rawToken)}`;
+    const subject = 'Welcome to Marfields Attendance';
+
+    const webUrl = this.env('ATTENDANCE_WEB_URL');
+    const playUrl = this.env('GOOGLE_PLAY_APP_URL');
+    const appleUrl = this.env('APPLE_APP_STORE_URL');
+    const supportEmail = this.env('SUPPORT_EMAIL');
+
+    // ----- plain text -----
+    const textLines = [
+      `Welcome to Marfields Attendance, ${fullName}.`,
+      '',
+      'Your attendance account has been created.',
+      `Login email: ${to}`,
+      '',
+      `Create your password (link valid for ${expiresInHours} hours):`,
+      link,
+      '',
+      'After setting your password you can log in normally.',
+      'On mobile, allow location permission — it is required to clock in and out.',
+    ];
+    if (webUrl) textLines.push('', `Attendance web app: ${webUrl}`);
+    if (playUrl) textLines.push(`Android app (Google Play): ${playUrl}`);
+    if (appleUrl) textLines.push(`iPhone app (App Store): ${appleUrl}`);
+    if (supportEmail) textLines.push('', `Need help? Contact ${supportEmail}`);
+    textLines.push(
+      '',
+      'For your security, do not forward or share this activation link.',
+    );
+    const text = textLines.join('\n');
+
+    // ----- HTML -----
+    const btn = (href: string, label: string, bg: string) =>
+      `<a href="${href}" style="display:inline-block;background:${bg};color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;margin:4px 6px;">${label}</a>`;
+    const storeButtons = [
+      webUrl ? btn(webUrl, 'Open Attendance Web', '#00695c') : '',
+      playUrl ? btn(playUrl, 'Get it on Google Play', '#3949ab') : '',
+      appleUrl ? btn(appleUrl, 'Download on the App Store', '#111111') : '',
+    ]
+      .filter(Boolean)
+      .join('');
+    const supportBlock = supportEmail
+      ? `<p style="color:#555;font-size:13px;">Need help? Contact <a href="mailto:${supportEmail}">${supportEmail}</a>.</p>`
+      : '';
+    const html = `
+  <div style="font-family:Segoe UI,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222;">
+    <h2 style="color:#00695c;margin:0 0 4px;">Marfields Attendance</h2>
+    <p style="margin:0 0 16px;color:#777;font-size:13px;">Welcome aboard</p>
+    <p>Hello <strong>${fullName}</strong>,</p>
+    <p>Your Marfields Attendance account has been created. Your login email is
+       <strong>${to}</strong>.</p>
+    <p style="text-align:center;margin:24px 0;">
+      ${btn(link, 'Create Password', '#00695c')}
+    </p>
+    <p style="color:#555;">This activation link is valid for
+       <strong>${expiresInHours} hours</strong>. After you set your password you
+       can log in normally.</p>
+    <p style="color:#555;">On the mobile app, please <strong>allow location
+       permission</strong> — it is required to clock in and out.</p>
+    ${storeButtons ? `<p style="text-align:center;margin:18px 0;">${storeButtons}</p>` : ''}
+    ${supportBlock}
+    <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
+    <p style="color:#999;font-size:12px;">For your security, do not forward or
+       share this activation link. If you did not expect this email you can
+       ignore it.</p>
+  </div>`;
+
+    if (this.provider === 'graph') {
+      await this.sendViaGraph(to, subject, html);
+    } else {
+      const from = this.env('EMAIL_FROM') || 'Attendance <no-reply@marfields.com>';
+      await this.getTransporter().sendMail({ from, to, subject, text, html });
+    }
+  }
+
+  // -------------------------------------------------------------------
   // Microsoft Graph (client credentials)
   // -------------------------------------------------------------------
 

@@ -1,6 +1,19 @@
 import '../models/user_model.dart';
 import 'api_client.dart';
 
+/// Result of creating a user, including the onboarding/activation outcome.
+class CreateUserResult {
+  final UserModel user;
+  final String? onboardingStatus; // EMAIL_SENT | EMAIL_FAILED | NO_EMAIL | ALREADY_ACTIVATED | ACTIVATION_PENDING
+  final String? onboardingEmail;
+
+  CreateUserResult({
+    required this.user,
+    this.onboardingStatus,
+    this.onboardingEmail,
+  });
+}
+
 class UsersService {
   final ApiClient _api = ApiClient.instance;
 
@@ -44,7 +57,8 @@ class UsersService {
   }
 
   /// POST /users — create a single user manually.
-  Future<UserModel> createUser({
+  /// Returns the created user plus the onboarding/activation status.
+  Future<CreateUserResult> createUser({
     required String fullName,
     String? email,
     String? password,
@@ -75,7 +89,20 @@ class UsersService {
       if (positionId != null) 'positionId': positionId,
     };
     final data = await _api.post('/users', body: body) as Map<String, dynamic>;
-    return UserModel.fromJson(data);
+    final userJson = (data['user'] ?? data) as Map<String, dynamic>;
+    final onboarding = data['onboarding'] as Map<String, dynamic>?;
+    return CreateUserResult(
+      user: UserModel.fromJson(userJson),
+      onboardingStatus: onboarding?['status'] as String?,
+      onboardingEmail: onboarding?['email'] as String?,
+    );
+  }
+
+  /// POST /users/:id/resend-activation — resend the welcome email (ADMIN/MANAGER).
+  /// Returns {status, activationExpiresAt?}. Never returns the token or link.
+  Future<Map<String, dynamic>> resendActivation(String id) async {
+    return await _api.post('/users/$id/resend-activation')
+        as Map<String, dynamic>;
   }
 
   /// POST /users/import — upload a CSV or Excel file.
