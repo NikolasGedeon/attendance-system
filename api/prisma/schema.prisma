@@ -1,6 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
- binaryTargets = ["native", "debian-openssl-3.0.x"]
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
@@ -9,42 +9,42 @@ datasource db {
 }
 
 model User {
-  id                 String                    @id @default(uuid())
-  fullName           String
-  email              String?                   @unique
-  passwordHash       String?
-  microsoftId        String?                   @unique
-  role               Role                      @default(EMPLOYEE)
-  isActive           Boolean                   @default(true)
-  createdAt          DateTime                  @default(now())
-  updatedAt          DateTime                  @updatedAt
-  locationId         String?
-  authMethod         AuthMethod                @default(CARD)
-  cardAssignedAt     DateTime?
-  cardDisabledAt     DateTime?
-  cardUid            String?                   @unique
-  department         String?
-  employeeCode       String?                   @unique
-  hasMobile          Boolean                   @default(false)
-  cardOtpFailedCount Int                       @default(0)
-  cardOtpLocked      Boolean                   @default(false)
-  phoneNumber        String?
-  requireOtpForCard  Boolean                   @default(false)
-  employeeType       EmployeeType              @default(INTERNAL)
-  positionId         String?
-  mustChangePassword Boolean                   @default(true)
-  passwordChangedAt  DateTime?
-  tokenVersion       Int                       @default(0)
-  attendances        Attendance[]
-  adjustmentLogs     AttendanceAdjustmentLog[]
-  otps               AttendanceOtp[]
-  mobileTokens       MobileAttendanceToken[]
-  kioskQrChallenges  KioskQrChallenge[]
+  id                  String                    @id @default(uuid())
+  fullName            String
+  email               String?                   @unique
+  passwordHash        String?
+  microsoftId         String?                   @unique
+  role                Role                      @default(EMPLOYEE)
+  isActive            Boolean                   @default(true)
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  locationId          String?
+  authMethod          AuthMethod                @default(CARD)
+  cardAssignedAt      DateTime?
+  cardDisabledAt      DateTime?
+  cardUid             String?                   @unique
+  department          String?
+  employeeCode        String?                   @unique
+  hasMobile           Boolean                   @default(false)
+  cardOtpFailedCount  Int                       @default(0)
+  cardOtpLocked       Boolean                   @default(false)
+  phoneNumber         String?
+  requireOtpForCard   Boolean                   @default(false)
+  employeeType        EmployeeType              @default(INTERNAL)
+  positionId          String?
+  mustChangePassword  Boolean                   @default(true)
+  passwordChangedAt   DateTime?
+  tokenVersion        Int                       @default(0)
+  attendances         Attendance[]
+  adjustmentLogs      AttendanceAdjustmentLog[]
+  otps                AttendanceOtp[]
+  mobileTokens        MobileAttendanceToken[]
+  kioskQrChallenges   KioskQrChallenge[]
   passwordResetTokens PasswordResetToken[]
-  refreshTokens      RefreshToken[]
-  location           Location?                 @relation(fields: [locationId], references: [id])
-  position           Position?                 @relation(fields: [positionId], references: [id])
-  devices            UserDevice[]
+  refreshTokens       RefreshToken[]
+  location            Location?                 @relation(fields: [locationId], references: [id])
+  position            Position?                 @relation(fields: [positionId], references: [id])
+  devices             UserDevice[]
 
   @@index([locationId])
   @@index([cardUid])
@@ -63,22 +63,32 @@ model Position {
 }
 
 model Attendance {
-  id             String                    @id @default(uuid())
-  userId         String
-  clockIn        DateTime
-  clockOut       DateTime?
-  latitude       Float?
-  longitude      Float?
-  createdAt      DateTime                  @default(now())
-  updatedAt      DateTime                  @updatedAt
-  isEdited       Boolean                   @default(false)
-  kioskInId      String?
-  kioskOutId     String?
-  methodIn       AttendanceMethod?
-  methodOut      AttendanceMethod?
-  notes          String?
-  user           User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  adjustmentLogs AttendanceAdjustmentLog[]
+  id                     String                    @id @default(uuid())
+  userId                 String
+  clockIn                DateTime
+  clockOut               DateTime?
+  latitude               Float?
+  longitude              Float?
+  // Clock-OUT geolocation (Stage 2). All nullable so historical rows stay valid.
+  // NOTE: clockOutCapturedAt is the GPS-fix timestamp from the device, NOT the
+  // official clock-out time. The official clock-out time is always `clockOut`,
+  // generated by the backend (server clock) — never trusted from the phone.
+  clockOutLatitude       Float?
+  clockOutLongitude      Float?
+  clockOutAccuracyMeters Float?
+  clockOutLocationId     String?
+  clockOutGeofenceStatus String?
+  clockOutCapturedAt     DateTime?
+  createdAt              DateTime                  @default(now())
+  updatedAt              DateTime                  @updatedAt
+  isEdited               Boolean                   @default(false)
+  kioskInId              String?
+  kioskOutId             String?
+  methodIn               AttendanceMethod?
+  methodOut              AttendanceMethod?
+  notes                  String?
+  user                   User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adjustmentLogs         AttendanceAdjustmentLog[]
 
   @@index([userId])
   @@index([clockIn])

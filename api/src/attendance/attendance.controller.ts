@@ -19,6 +19,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { AttendanceReportsService } from './attendance-reports.service';
 import type { ReportFilters } from './attendance-reports.service';
 import { AttendanceService } from './attendance.service';
+import { ClockOutDto } from './dto/clock-out.dto';
 
 @Controller('attendance')
 @UseGuards(JwtAuthGuard)
@@ -41,8 +42,8 @@ export class AttendanceController {
   }
 
   @Post('clock-out')
-  clockOut(@Request() req) {
-    return this.attendanceService.clockOut(req.user.id);
+  clockOut(@Request() req, @Body() body: ClockOutDto) {
+    return this.attendanceService.clockOut(req.user.id, body);
   }
 
   @Get('me')

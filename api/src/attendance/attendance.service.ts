@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { ClockOutDto } from './dto/clock-out.dto';
 
 @Injectable()
 export class AttendanceService {
@@ -63,15 +64,42 @@ export class AttendanceService {
     };
   }
 
+  /**
+   * Shared geofence validation used by BOTH mobile clock-in and clock-out.
+   * Throws BadRequestException with a stable machine-readable `code`.
+   * Behaviour is unchanged for clock-in (same checks/order); only a `code`
+   * field and an explicit coordinate-range check were added.
+   */
   private async validateUserLocation(
     userId: string,
     latitude?: number,
     longitude?: number,
   ) {
-    if (latitude === undefined || longitude === undefined) {
-      throw new BadRequestException(
-        'Location is required. Please enable GPS/location before clocking in.',
-      );
+    if (
+      latitude === undefined ||
+      latitude === null ||
+      longitude === undefined ||
+      longitude === null
+    ) {
+      throw new BadRequestException({
+        code: 'LOCATION_REQUIRED',
+        message:
+          'Location is required. Please enable GPS/location before clocking in or out.',
+      });
+    }
+
+    if (
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
+      throw new BadRequestException({
+        code: 'LOCATION_INVALID',
+        message: 'The provided location coordinates are invalid.',
+      });
     }
 
     const user = await this.prisma.user.findUnique({
@@ -88,15 +116,19 @@ export class AttendanceService {
     }
 
     if (!user.location) {
-      throw new BadRequestException(
-        'You are not assigned to a work location. Please contact admin.',
-      );
+      throw new BadRequestException({
+        code: 'NO_ASSIGNED_LOCATION',
+        message:
+          'You are not assigned to a work location. Please contact admin.',
+      });
     }
 
     if (!user.location.isActive) {
-      throw new BadRequestException(
-        'Your assigned work location is inactive. Please contact admin.',
-      );
+      throw new BadRequestException({
+        code: 'LOCATION_INACTIVE',
+        message:
+          'Your assigned work location is inactive. Please contact admin.',
+      });
     }
 
     const distanceMeters = this.getDistanceMeters(
@@ -110,6 +142,7 @@ export class AttendanceService {
 
     if (distanceMeters > user.location.radiusMeters) {
       throw new BadRequestException({
+        code: 'LOCATION_OUTSIDE_GEOFENCE',
         message: 'You are not inside your assigned work location.',
         assignedLocation: {
           id: user.location.id,
@@ -131,6 +164,44 @@ export class AttendanceService {
       assignedLocation: user.location,
       distanceMeters: roundedDistanceMeters,
     };
+  }
+
+  /**
+   * Validate the GPS-fix freshness for a mobile clock-out.
+   * Returns the parsed fix time (or undefined if none supplied). The official
+   * clock-out time is ALWAYS the server clock, never this value.
+   */
+  private validateFixFreshness(capturedAt?: string): Date | undefined {
+    if (!capturedAt) return undefined;
+
+    const captured = new Date(capturedAt);
+    if (Number.isNaN(captured.getTime())) {
+      throw new BadRequestException({
+        code: 'LOCATION_INVALID',
+        message: 'The location timestamp is invalid.',
+      });
+    }
+
+    const maxAgeSeconds = Number(
+      process.env.CLOCK_LOCATION_MAX_AGE_SECONDS ?? 120,
+    );
+    const futureSkewSeconds = 30;
+    const ageSeconds = (Date.now() - captured.getTime()) / 1000;
+
+    if (ageSeconds > maxAgeSeconds) {
+      throw new BadRequestException({
+        code: 'LOCATION_TOO_OLD',
+        message:
+          'Your location is out of date. Please try clocking out again.',
+      });
+    }
+    if (ageSeconds < -futureSkewSeconds) {
+      throw new BadRequestException({
+        code: 'LOCATION_TIMESTAMP_IN_FUTURE',
+        message: 'Your device clock appears to be ahead. Please check the time.',
+      });
+    }
+    return captured;
   }
 
   async clockIn(userId: string, latitude?: number, longitude?: number) {
@@ -204,7 +275,17 @@ export class AttendanceService {
     };
   }
 
-  async clockOut(userId: string) {
+  /**
+   * Mobile employee clock-out (POST /attendance/clock-out).
+   *
+   * Geolocation is enforced unless REQUIRE_MOBILE_CLOCKOUT_GEOLOCATION="false"
+   * (rollout escape hatch only — the intended production value is unset/true).
+   * Kiosk/card/QR clock-outs use their own services and are unaffected.
+   */
+  async clockOut(userId: string, dto: ClockOutDto = {}) {
+    const enforceGeolocation =
+      process.env.REQUIRE_MOBILE_CLOCKOUT_GEOLOCATION !== 'false';
+
     const openAttendance = await this.prisma.attendance.findFirst({
       where: {
         userId,
@@ -219,13 +300,38 @@ export class AttendanceService {
       throw new NotFoundException('No active clock-in record found');
     }
 
+    // Clock-out geolocation fields (only populated when enforcement is on).
+    // Cast at the call site because the generated Prisma client only exposes
+    // these columns AFTER `npx prisma generate` is run against the new schema.
+    let clockOutGeo: Record<string, unknown> = {};
+
+    if (enforceGeolocation) {
+      const capturedAt = this.validateFixFreshness(dto.capturedAt);
+      const { assignedLocation } = await this.validateUserLocation(
+        userId,
+        dto.latitude,
+        dto.longitude,
+      );
+
+      clockOutGeo = {
+        clockOutLatitude: dto.latitude,
+        clockOutLongitude: dto.longitude,
+        clockOutAccuracyMeters: dto.accuracyMeters ?? null,
+        clockOutLocationId: assignedLocation.id,
+        clockOutGeofenceStatus: 'INSIDE',
+        clockOutCapturedAt: capturedAt ?? null,
+      };
+    }
+
     const updated = await this.prisma.attendance.update({
       where: {
         id: openAttendance.id,
       },
+      // `clockOut` is ALWAYS the server clock — never the phone-supplied time.
       data: {
         clockOut: new Date(),
-      },
+        ...clockOutGeo,
+      } as unknown as Prisma.AttendanceUpdateInput,
     });
 
     return this.formatAttendanceRecord(updated);

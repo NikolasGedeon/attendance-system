@@ -99,8 +99,34 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _success = null;
     });
     try {
-      await _attendanceService.clockOut();
+      // A fresh location fix is mandatory; backend enforces the geofence.
+      final position = await _locationService.getCurrentPosition();
+      await _attendanceService.clockOut(
+        position.latitude,
+        position.longitude,
+        accuracyMeters: position.accuracy,
+        capturedAt: position.timestamp,
+      );
       if (mounted) setState(() => _success = 'Clocked out successfully');
+    } on LocationException catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.message;
+          _actionInProgress = false;
+        });
+        if (e.isPermanentlyDenied) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(e.message),
+              action: SnackBarAction(
+                label: 'Open Settings',
+                onPressed: _locationService.openLocationSettings,
+              ),
+            ),
+          );
+        }
+      }
+      return; // no server call happened; keep current status
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (_) {

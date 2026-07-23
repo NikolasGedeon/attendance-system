@@ -20,9 +20,22 @@ class AttendanceService {
     return _extractLocationName(data);
   }
 
-  /// POST /attendance/clock-out (unchanged)
-  Future<void> clockOut() async {
-    await _api.post('/attendance/clock-out');
+  /// POST /attendance/clock-out with a fresh GPS fix.
+  /// [capturedAt] is the GPS-fix time (sent for freshness only); the official
+  /// clock-out time is set by the backend.
+  Future<void> clockOut(
+    double latitude,
+    double longitude, {
+    double? accuracyMeters,
+    DateTime? capturedAt,
+  }) async {
+    await _api.post('/attendance/clock-out', body: {
+      'latitude': latitude,
+      'longitude': longitude,
+      if (accuracyMeters != null) 'accuracyMeters': accuracyMeters,
+      if (capturedAt != null)
+        'capturedAt': capturedAt.toUtc().toIso8601String(),
+    });
   }
 
   /// Defensively digs the assigned location name out of the clock-in
