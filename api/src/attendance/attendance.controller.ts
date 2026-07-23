@@ -104,13 +104,14 @@ export class AttendanceController {
     @Query() query: ReportFilters & { format?: string },
     @Res() res: Response,
   ) {
+    const baseName = `attendance-report-${query.dateFrom ?? 'from'}_${query.dateTo ?? 'to'}`;
+    if ((query.format || '').toLowerCase() === 'csv') {
+      const csv = await this.reportsService.buildAdvancedCsv(query);
+      this.sendCsv(res, csv, baseName);
+      return;
+    }
     const wb = await this.reportsService.buildAdvancedWorkbook(query);
-    await this.sendWorkbook(
-      res,
-      wb,
-      `attendance-report-${query.dateFrom ?? 'from'}_${query.dateTo ?? 'to'}`,
-      query.format,
-    );
+    await this.sendWorkbook(res, wb, baseName);
   }
 
   @Get('reports/absence')
@@ -127,13 +128,14 @@ export class AttendanceController {
     @Query() query: ReportFilters & { format?: string },
     @Res() res: Response,
   ) {
+    const baseName = `absence-report-${query.dateFrom ?? 'from'}_${query.dateTo ?? 'to'}`;
+    if ((query.format || '').toLowerCase() === 'csv') {
+      const csv = await this.reportsService.buildAbsenceCsv(query);
+      this.sendCsv(res, csv, baseName);
+      return;
+    }
     const wb = await this.reportsService.buildAbsenceWorkbook(query);
-    await this.sendWorkbook(
-      res,
-      wb,
-      `absence-report-${query.dateFrom ?? 'from'}_${query.dateTo ?? 'to'}`,
-      query.format,
-    );
+    await this.sendWorkbook(res, wb, baseName);
   }
 
   @Get(':id/adjustments')
@@ -161,24 +163,12 @@ export class AttendanceController {
     return this.attendanceService.updateAttendance(id, req.user.id, body);
   }
 
-  /** Writes the workbook as .xlsx (default) or .csv of the first sheet. */
+  /** Writes the workbook as a styled multi-sheet .xlsx. */
   private async sendWorkbook(
     res: Response,
     wb: ExcelJS.Workbook,
     baseName: string,
-    format?: string,
   ) {
-    if ((format || '').toLowerCase() === 'csv') {
-      const buffer = await wb.csv.writeBuffer();
-      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${baseName}.csv"`,
-      );
-      res.send(Buffer.from(buffer));
-      return;
-    }
-
     const buffer = await wb.xlsx.writeBuffer();
     res.setHeader(
       'Content-Type',
@@ -189,5 +179,16 @@ export class AttendanceController {
       `attachment; filename="${baseName}.xlsx"`,
     );
     res.send(Buffer.from(buffer));
+  }
+
+  /** Writes a human-readable, formula-injection-safe CSV. */
+  private sendCsv(res: Response, csv: string, baseName: string) {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${baseName}.csv"`,
+    );
+    // UTF-8 BOM so Excel opens accented names correctly.
+    res.send(Buffer.from('﻿' + csv, 'utf-8'));
   }
 }

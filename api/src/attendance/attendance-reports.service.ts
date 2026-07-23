@@ -2,12 +2,19 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
-
-/** Timezone used for day grouping and time formatting in reports. */
-const REPORT_TZ = 'Asia/Nicosia';
-
-/** Hours deducted once per user per day as an unpaid break. */
-const DAILY_BREAK_HOURS = 1;
+import {
+  BREAK_POLICY_TEXT,
+  DAILY_BREAK_SECONDS,
+  REPORT_TZ,
+  RawSession,
+  aggregateDay,
+  csvRow,
+  cyprusDate,
+  formatDuration,
+  secondsToDecimalHours,
+  secondsToExcelDuration,
+  weekKeyOf,
+} from './report-policy.util';
 
 export interface ReportFilters {
   dateFrom?: string;
@@ -32,37 +39,18 @@ export interface ReportUserInfo {
   location: string | null;
 }
 
-export interface DayRow {
-  date: string;
-  clockIn: string | null; // HH:MM local, first record of the day
-  clockOut: string | null; // HH:MM local, last record of the day
-  recordsCount: number;
-  hasOpenRecord: boolean;
-  grossHours: number;
-  breakHours: number;
-  netHours: number;
-  locations: string[];
-}
-
-export interface PeriodTotal {
-  key: string; // "Week of 2026-07-06" or "2026-07"
-  grossHours: number;
-  breakHours: number;
-  netHours: number;
+/** Amounts carried at day / period / total / grand levels (integer seconds + BC decimals). */
+export interface Amounts {
+  grossSeconds: number;
+  breakSeconds: number;
+  netSeconds: number;
   daysWorked: number;
-}
-
-export interface UserReport {
-  user: ReportUserInfo;
-  days: DayRow[];
-  weeks: PeriodTotal[];
-  months: PeriodTotal[];
-  totals: {
-    grossHours: number;
-    breakHours: number;
-    netHours: number;
-    daysWorked: number;
-  };
+  grossHours: number; // backward-compat decimal
+  breakHours: number; // backward-compat decimal
+  netHours: number; // backward-compat decimal
+  grossDisplay: string; // HH:mm
+  breakDisplay: string; // HH:mm
+  netDisplay: string; // HH:mm
 }
 
 @Injectable()
@@ -99,7 +87,7 @@ export class AttendanceReportsService {
       orderBy: { clockIn: 'asc' },
     });
 
-    // Group: userId -> dateStr -> raw records
+    // Group: userId -> Cyprus dateStr -> raw records
     const byUser = new Map<
       string,
       { info: ReportUserInfo; days: Map<string, typeof records> }
@@ -123,73 +111,68 @@ export class AttendanceReportsService {
         };
         byUser.set(record.userId, entry);
       }
-      const dateStr = this.localDate(record.clockIn);
+      const dateStr = cyprusDate(record.clockIn);
       const day = entry.days.get(dateStr) ?? [];
       day.push(record);
       entry.days.set(dateStr, day);
     }
 
-    const users: UserReport[] = [];
-    const grandTotal = { grossHours: 0, breakHours: 0, netHours: 0, daysWorked: 0 };
+    const users: any[] = [];
+    const grand = this.zeroAmounts();
+    const exceptionCounts = this.zeroExceptionCounts();
 
     for (const entry of byUser.values()) {
-      const days: DayRow[] = [];
-      const weekTotals = new Map<string, PeriodTotal>();
-      const monthTotals = new Map<string, PeriodTotal>();
-      const userTotal = {
-        grossHours: 0,
-        breakHours: 0,
-        netHours: 0,
-        daysWorked: 0,
-      };
+      const days: any[] = [];
+      const weekTotals = new Map<string, Amounts & { key: string }>();
+      const monthTotals = new Map<string, Amounts & { key: string }>();
+      const userTotal = this.zeroAmounts();
 
       const sortedDates = [...entry.days.keys()].sort();
       for (const date of sortedDates) {
-        const dayRecords = entry.days.get(date)!;
+        const rawSessions: RawSession[] = entry.days.get(date)!.map((r) => ({
+          id: r.id,
+          clockIn: r.clockIn,
+          clockOut: r.clockOut,
+          methodIn: r.methodIn,
+          methodOut: r.methodOut,
+          latitude: r.latitude,
+          longitude: r.longitude,
+          isEdited: r.isEdited,
+        }));
 
-        // Sum gross hours over all records of the day first,
-        // then deduct the break once per day.
-        let gross = 0;
-        let hasOpen = false;
-        const locations = new Set<string>();
-        for (const r of dayRecords) {
-          if (r.clockOut) {
-            gross += (r.clockOut.getTime() - r.clockIn.getTime()) / 3_600_000;
-          } else {
-            hasOpen = true;
-          }
-          if (entry.info.location) locations.add(entry.info.location);
-        }
-        gross = this.round(gross);
-        const breakHours = this.round(Math.min(DAILY_BREAK_HOURS, gross));
-        const net = this.round(Math.max(0, gross - DAILY_BREAK_HOURS));
-
-        const first = dayRecords[0];
-        const lastWithOut = [...dayRecords]
-          .reverse()
-          .find((r) => r.clockOut !== null);
+        const agg = aggregateDay(rawSessions);
+        for (const code of agg.statuses) exceptionCounts[code] += 1;
 
         days.push({
           date,
-          clockIn: this.localTime(first.clockIn),
-          clockOut: lastWithOut?.clockOut
-            ? this.localTime(lastWithOut.clockOut)
-            : null,
-          recordsCount: dayRecords.length,
-          hasOpenRecord: hasOpen,
-          grossHours: gross,
-          breakHours,
-          netHours: net,
-          locations: [...locations],
+          // --- backward-compat keys (still read by current Flutter) ---
+          clockIn: agg.firstClockIn,
+          clockOut: agg.finalClockOut,
+          recordsCount: agg.recordsCount,
+          hasOpenRecord: agg.hasOpenRecord,
+          grossHours: secondsToDecimalHours(agg.grossSeconds),
+          breakHours: secondsToDecimalHours(agg.breakSeconds),
+          netHours: secondsToDecimalHours(agg.netSeconds),
+          locations: entry.info.location ? [entry.info.location] : [],
+          // --- new integer-second + display + drill-down fields ---
+          firstClockIn: agg.firstClockIn,
+          finalClockOut: agg.finalClockOut,
+          completedCount: agg.completedCount,
+          openCount: agg.openCount,
+          grossSeconds: agg.grossSeconds,
+          breakSeconds: agg.breakSeconds,
+          netSeconds: agg.netSeconds,
+          grossDisplay: formatDuration(agg.grossSeconds),
+          breakDisplay: formatDuration(agg.breakSeconds),
+          netDisplay: formatDuration(agg.netSeconds),
+          methods: agg.methods,
+          statuses: agg.statuses,
+          sessions: agg.sessions,
         });
 
-        this.addToPeriod(weekTotals, this.weekKey(date), gross, breakHours, net);
-        this.addToPeriod(monthTotals, date.slice(0, 7), gross, breakHours, net);
-
-        userTotal.grossHours = this.round(userTotal.grossHours + gross);
-        userTotal.breakHours = this.round(userTotal.breakHours + breakHours);
-        userTotal.netHours = this.round(userTotal.netHours + net);
-        userTotal.daysWorked += 1;
+        this.addToPeriod(weekTotals, weekKeyOf(date), agg);
+        this.addToPeriod(monthTotals, date.slice(0, 7), agg);
+        this.accumulate(userTotal, agg);
       }
 
       users.push({
@@ -200,14 +183,7 @@ export class AttendanceReportsService {
         totals: userTotal,
       });
 
-      grandTotal.grossHours = this.round(
-        grandTotal.grossHours + userTotal.grossHours,
-      );
-      grandTotal.breakHours = this.round(
-        grandTotal.breakHours + userTotal.breakHours,
-      );
-      grandTotal.netHours = this.round(grandTotal.netHours + userTotal.netHours);
-      grandTotal.daysWorked += userTotal.daysWorked;
+      this.accumulateAmounts(grand, userTotal);
     }
 
     users.sort((a, b) => a.user.fullName.localeCompare(b.user.fullName));
@@ -217,15 +193,17 @@ export class AttendanceReportsService {
       dateTo: range.toStr,
       period: this.parsePeriod(filters.period),
       timezone: REPORT_TZ,
-      breakPolicy: `${DAILY_BREAK_HOURS}h deducted once per user per day`,
+      breakPolicy: BREAK_POLICY_TEXT,
+      breakSecondsPerDay: DAILY_BREAK_SECONDS,
       usersCount: users.length,
-      grandTotal,
+      grandTotal: grand,
+      exceptionCounts,
       users,
     };
   }
 
   // -------------------------------------------------------------------
-  // Absence report
+  // Absence report (grouping unified on Europe/Nicosia)
   // -------------------------------------------------------------------
 
   async getAbsenceReport(filters: ReportFilters) {
@@ -256,7 +234,7 @@ export class AttendanceReportsService {
     });
 
     const present = new Set(
-      records.map((r) => `${r.userId}|${this.localDate(r.clockIn)}`),
+      records.map((r) => `${r.userId}|${cyprusDate(r.clockIn)}`),
     );
 
     const workingDays = this.workingDaysInRange(range.fromStr, range.toStr);
@@ -306,7 +284,80 @@ export class AttendanceReportsService {
   }
 
   // -------------------------------------------------------------------
-  // Workbook builders (ExcelJS, styled for management/HR)
+  // Amount helpers (integer seconds are the source of truth)
+  // -------------------------------------------------------------------
+
+  private zeroAmounts(): Amounts {
+    return {
+      grossSeconds: 0,
+      breakSeconds: 0,
+      netSeconds: 0,
+      daysWorked: 0,
+      grossHours: 0,
+      breakHours: 0,
+      netHours: 0,
+      grossDisplay: '00:00',
+      breakDisplay: '00:00',
+      netDisplay: '00:00',
+    };
+  }
+
+  private zeroExceptionCounts(): Record<string, number> {
+    return {
+      OPEN_RECORD: 0,
+      INVALID_DURATION: 0,
+      CLOCK_OUT_BEFORE_CLOCK_IN: 0,
+      OVERNIGHT_SHIFT: 0,
+      OVERLAPPING_RECORDS: 0,
+      MULTIPLE_RECORDS: 0,
+      MANUALLY_ADJUSTED: 0,
+    };
+  }
+
+  private refreshDerived(a: Amounts) {
+    a.grossHours = secondsToDecimalHours(a.grossSeconds);
+    a.breakHours = secondsToDecimalHours(a.breakSeconds);
+    a.netHours = secondsToDecimalHours(a.netSeconds);
+    a.grossDisplay = formatDuration(a.grossSeconds);
+    a.breakDisplay = formatDuration(a.breakSeconds);
+    a.netDisplay = formatDuration(a.netSeconds);
+  }
+
+  /** Add one aggregated day to a running Amounts total. */
+  private accumulate(
+    total: Amounts,
+    day: { grossSeconds: number; breakSeconds: number; netSeconds: number },
+  ) {
+    total.grossSeconds += day.grossSeconds;
+    total.breakSeconds += day.breakSeconds;
+    total.netSeconds += day.netSeconds;
+    total.daysWorked += 1;
+    this.refreshDerived(total);
+  }
+
+  /** Merge one Amounts into another (user -> grand), summing days. */
+  private accumulateAmounts(total: Amounts, part: Amounts) {
+    total.grossSeconds += part.grossSeconds;
+    total.breakSeconds += part.breakSeconds;
+    total.netSeconds += part.netSeconds;
+    total.daysWorked += part.daysWorked;
+    this.refreshDerived(total);
+  }
+
+  private addToPeriod(
+    map: Map<string, Amounts & { key: string }>,
+    key: string,
+    day: { grossSeconds: number; breakSeconds: number; netSeconds: number },
+  ) {
+    const entry =
+      (map.get(key) as Amounts & { key: string }) ??
+      ({ key, ...this.zeroAmounts() } as Amounts & { key: string });
+    this.accumulate(entry, day);
+    map.set(key, entry);
+  }
+
+  // -------------------------------------------------------------------
+  // Excel workbook — Advanced report (professional, numeric durations)
   // -------------------------------------------------------------------
 
   private static readonly HEADER_FILL: ExcelJS.Fill = {
@@ -330,202 +381,29 @@ export class AttendanceReportsService {
     left: { style: 'thin', color: { argb: 'FFD9D9D9' } },
     right: { style: 'thin', color: { argb: 'FFD9D9D9' } },
   };
+  private static readonly DURATION_FMT = '[h]:mm';
 
-  async buildAdvancedWorkbook(
-    filters: ReportFilters,
-  ): Promise<ExcelJS.Workbook> {
+  async buildAdvancedWorkbook(filters: ReportFilters): Promise<ExcelJS.Workbook> {
     const report = await this.getAdvancedReport(filters);
-    const period = report.period;
-    const generatedAt = `${this.localDate(new Date())} ${this.localTime(new Date())}`;
+    const generatedAt = `${cyprusDate(new Date())} ${this.nowTime()}`;
 
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Attendance System';
     wb.created = new Date();
 
-    const header = [
-      'Employee Name',
-      'Employee Code',
-      'Employee Type',
-      'Position',
-      'Department',
-      'Location',
-      'Date',
-      'Clock In',
-      'Clock Out',
-      'Gross Hours',
-      'Break Hours',
-      'Net Hours',
-      'Status / Notes',
-    ];
-    const hoursCols = [10, 11, 12];
-
-    const ws = wb.addWorksheet('Attendance Report', {
-      views: [{ state: 'frozen', ySplit: 4 }],
-    });
-
-    this.addTitle(
-      ws,
-      header.length,
-      'Attendance Report',
-      `Date range: ${report.dateFrom} → ${report.dateTo}   ·   ` +
-        `Period: ${period}   ·   Generated: ${generatedAt} (${REPORT_TZ})`,
-    );
-
-    const headerRow = ws.addRow(header);
-    this.styleHeaderRow(headerRow);
-    ws.autoFilter = {
-      from: { row: 4, column: 1 },
-      to: { row: 4, column: header.length },
-    };
-
-    const addDataRow = (
-      values: (string | number)[],
-      opts: { fill?: ExcelJS.Fill; bold?: boolean } = {},
-    ) => {
-      const row = ws.addRow(values);
-      row.eachCell({ includeEmpty: true }, (cell, col) => {
-        cell.border = AttendanceReportsService.CELL_BORDER;
-        if (opts.fill) cell.fill = opts.fill;
-        if (opts.bold) cell.font = { bold: true };
-        if (hoursCols.includes(col) && typeof cell.value === 'number') {
-          cell.numFmt = '0.00';
-        }
-      });
-      return row;
-    };
-
-    for (const u of report.users) {
-      const base = [
-        u.user.fullName,
-        u.user.employeeCode ?? '',
-        u.user.employeeType,
-        u.user.position ?? '',
-        u.user.department ?? '',
-        u.user.location ?? '',
-      ];
-
-      for (const day of u.days) {
-        const row = addDataRow([
-          ...base,
-          day.date,
-          day.clockIn ?? '',
-          day.clockOut ?? '',
-          day.grossHours,
-          day.breakHours,
-          day.netHours,
-          day.hasOpenRecord
-            ? 'OPEN RECORD'
-            : day.recordsCount > 1
-              ? `${day.recordsCount} records`
-              : '',
-        ]);
-        if (day.hasOpenRecord) {
-          row.getCell(13).font = { bold: true, color: { argb: 'FF9C0006' } };
-        }
-      }
-
-      if (period === 'weekly' || period === 'monthly') {
-        for (const w of u.weeks) {
-          addDataRow(
-            [
-              ...base,
-              `${w.key} — Total`,
-              '',
-              `${w.daysWorked} day(s)`,
-              w.grossHours,
-              w.breakHours,
-              w.netHours,
-              '',
-            ],
-            { fill: AttendanceReportsService.TOTAL_FILL, bold: true },
-          );
-        }
-      }
-      if (period === 'monthly') {
-        for (const m of u.months) {
-          addDataRow(
-            [
-              ...base,
-              `Month ${m.key} — Total`,
-              '',
-              `${m.daysWorked} day(s)`,
-              m.grossHours,
-              m.breakHours,
-              m.netHours,
-              '',
-            ],
-            { fill: AttendanceReportsService.TOTAL_FILL, bold: true },
-          );
-        }
-      }
-
-      addDataRow(
-        [
-          ...base,
-          'USER TOTAL',
-          '',
-          `${u.totals.daysWorked} day(s)`,
-          u.totals.grossHours,
-          u.totals.breakHours,
-          u.totals.netHours,
-          '',
-        ],
-        { fill: AttendanceReportsService.TOTAL_FILL, bold: true },
-      );
-    }
-
-    ws.addRow([]);
-    const grand = addDataRow(
-      [
-        'GRAND TOTAL',
-        '',
-        '',
-        '',
-        '',
-        '',
-        `${report.dateFrom} → ${report.dateTo}`,
-        '',
-        `${report.grandTotal.daysWorked} day(s)`,
-        report.grandTotal.grossHours,
-        report.grandTotal.breakHours,
-        report.grandTotal.netHours,
-        '',
-      ],
-      { fill: AttendanceReportsService.GRAND_FILL, bold: true },
-    );
-    grand.eachCell({ includeEmpty: true }, (cell) => {
-      cell.border = {
-        ...AttendanceReportsService.CELL_BORDER,
-        top: { style: 'double', color: { argb: 'FF4472C4' } },
-      };
-    });
-
-    this.autoWidth(ws, header);
-
-    this.addSummarySheet(wb, [
-      ['Report', 'Advanced Attendance Report'],
-      ['Date From', report.dateFrom],
-      ['Date To', report.dateTo],
-      ['Period', period],
-      ['Applied Filters', this.describeFilters(filters)],
-      ['Total Users', report.usersCount],
-      ['Total Days Worked', report.grandTotal.daysWorked],
-      ['Total Gross Hours', report.grandTotal.grossHours],
-      ['Total Break Hours', report.grandTotal.breakHours],
-      ['Total Net Hours', report.grandTotal.netHours],
-      ['Break Policy', report.breakPolicy],
-      ['Timezone', REPORT_TZ],
-      ['Generated At', generatedAt],
-    ]);
+    this.buildDashboardSheet(wb, report, filters, generatedAt);
+    this.buildAttendanceDetailSheet(wb, report);
+    this.buildEmployeeSummarySheet(wb, report);
+    this.buildDailySummarySheet(wb, report);
+    this.buildExceptionsSheet(wb, report);
+    this.buildAppliedFiltersSheet(wb, report, filters, generatedAt);
 
     return wb;
   }
 
-  async buildAbsenceWorkbook(
-    filters: ReportFilters,
-  ): Promise<ExcelJS.Workbook> {
+  async buildAbsenceWorkbook(filters: ReportFilters): Promise<ExcelJS.Workbook> {
     const report = await this.getAbsenceReport(filters);
-    const generatedAt = `${this.localDate(new Date())} ${this.localTime(new Date())}`;
+    const generatedAt = `${cyprusDate(new Date())} ${this.nowTime()}`;
 
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Attendance System';
@@ -551,7 +429,7 @@ export class AttendanceReportsService {
       ws,
       header.length,
       'Absence Report',
-      `Date range: ${report.dateFrom} → ${report.dateTo}   ·   ` +
+      `Date range: ${report.dateFrom} -> ${report.dateTo}   ·   ` +
         `Generated: ${generatedAt} (${REPORT_TZ})`,
     );
 
@@ -594,7 +472,7 @@ export class AttendanceReportsService {
       ['Date To', report.dateTo],
       ['Working Days', report.totalWorkingDays],
       ['Users Checked', report.usersCount],
-      ['Absence Count', report.absenceCount],
+      ['Absent Employee-Days', report.absenceCount],
       ['Applied Filters', this.describeFilters(filters)],
       ['Working Days Policy', report.workingDaysPolicy],
       ['Timezone', REPORT_TZ],
@@ -604,7 +482,494 @@ export class AttendanceReportsService {
     return wb;
   }
 
+  // ----- Advanced workbook sheets -----
+
+  private buildDashboardSheet(
+    wb: ExcelJS.Workbook,
+    report: any,
+    filters: ReportFilters,
+    generatedAt: string,
+  ) {
+    const ws = wb.addWorksheet('Dashboard');
+    ws.mergeCells(1, 1, 1, 4);
+    const title = ws.getCell(1, 1);
+    title.value = 'Advanced Attendance Report';
+    title.font = { size: 16, bold: true, color: { argb: 'FF1F3864' } };
+    ws.mergeCells(2, 1, 2, 4);
+    ws.getCell(2, 1).value =
+      `Date range: ${report.dateFrom} -> ${report.dateTo}   ·   Period: ${report.period}` +
+      `   ·   Generated: ${generatedAt} (${REPORT_TZ})`;
+    ws.getCell(2, 1).font = { italic: true, color: { argb: 'FF595959' } };
+    ws.addRow([]);
+
+    ws.addRow(['Applied Filters', this.describeFilters(filters)]);
+    ws.addRow([]);
+
+    const kpiHeader = ws.addRow(['KPI', 'Value']);
+    this.styleHeaderRow(kpiHeader);
+
+    const g = report.grandTotal;
+    const ex = report.exceptionCounts;
+    const kpis: Array<[string, number | string, boolean?]> = [
+      ['Employees Included', report.usersCount],
+      ['Days With Attendance', g.daysWorked],
+      ['Gross Time', g.grossSeconds, true],
+      ['Scheduled Break Time', g.breakSeconds, true],
+      ['Net Worked Time', g.netSeconds, true],
+      ['Open Records', ex.OPEN_RECORD],
+      ['Invalid Records', ex.INVALID_DURATION],
+      ['Manually Adjusted Records', ex.MANUALLY_ADJUSTED],
+      ['Overnight Shifts', ex.OVERNIGHT_SHIFT],
+      ['Overlapping Records', ex.OVERLAPPING_RECORDS],
+    ];
+    for (const [label, value, isDuration] of kpis) {
+      const row = ws.addRow([label, '']);
+      row.getCell(1).font = { bold: true };
+      const valueCell = row.getCell(2);
+      if (isDuration) {
+        valueCell.value = secondsToExcelDuration(value as number);
+        valueCell.numFmt = AttendanceReportsService.DURATION_FMT;
+      } else {
+        valueCell.value = value as number;
+      }
+      row.eachCell({ includeEmpty: true }, (c) => {
+        c.border = AttendanceReportsService.CELL_BORDER;
+      });
+    }
+
+    ws.addRow([]);
+    ws.addRow(['Break Policy', BREAK_POLICY_TEXT]);
+    ws.getColumn(1).width = 28;
+    ws.getColumn(2).width = 52;
+  }
+
+  private buildAttendanceDetailSheet(wb: ExcelJS.Workbook, report: any) {
+    const header = [
+      'Employee Name',
+      'Employee Code',
+      'Employee Type',
+      'Department',
+      'Position',
+      'Location',
+      'Cyprus Date',
+      'Clock In',
+      'Clock Out',
+      'Gross Duration',
+      'Method In',
+      'Method Out',
+      'Clock-In Geolocation',
+      'Clock-Out Geolocation',
+      'Geofence Result',
+      'Status',
+      'Adjustment Status',
+    ];
+    const durationCols = [10];
+    const ws = wb.addWorksheet('Attendance Detail', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    const headerRow = ws.addRow(header);
+    this.styleHeaderRow(headerRow);
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: header.length },
+    };
+
+    for (const u of report.users) {
+      for (const day of u.days) {
+        for (const s of day.sessions) {
+          const geoIn =
+            s.latitude != null && s.longitude != null
+              ? `${s.latitude}, ${s.longitude}`
+              : '-';
+          const row = ws.addRow([
+            u.user.fullName,
+            u.user.employeeCode ?? '',
+            u.user.employeeType,
+            u.user.department ?? '',
+            u.user.position ?? '',
+            u.user.location ?? '',
+            day.date,
+            s.clockInLocal ?? '',
+            s.clockOutLocal ?? '',
+            secondsToExcelDuration(s.durationSeconds),
+            s.methodIn ?? '',
+            s.methodOut ?? '',
+            geoIn,
+            '-', // clock-out geolocation (Stage 2)
+            '-', // geofence result (Stage 2)
+            s.statuses.join(', ') || (s.open ? 'OPEN RECORD' : 'OK'),
+            s.isEdited ? 'MANUALLY ADJUSTED' : '',
+          ]);
+          this.borderRow(row, durationCols);
+        }
+      }
+    }
+    this.autoWidth(ws, header);
+  }
+
+  private buildEmployeeSummarySheet(wb: ExcelJS.Workbook, report: any) {
+    const header = [
+      'Employee Name',
+      'Employee Code',
+      'Employee Type',
+      'Department',
+      'Position',
+      'Location',
+      'Days With Attendance',
+      'Gross Duration',
+      'Break Duration',
+      'Net Duration',
+      'Open Records',
+      'Invalid Records',
+      'Adjusted Records',
+    ];
+    const durationCols = [8, 9, 10];
+    const ws = wb.addWorksheet('Employee Summary', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    const headerRow = ws.addRow(header);
+    this.styleHeaderRow(headerRow);
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: header.length },
+    };
+
+    for (const u of report.users) {
+      let open = 0;
+      let invalid = 0;
+      let adjusted = 0;
+      for (const day of u.days) {
+        open += day.openCount;
+        if (day.statuses.includes('INVALID_DURATION')) invalid += 1;
+        if (day.statuses.includes('MANUALLY_ADJUSTED')) adjusted += 1;
+      }
+      const row = ws.addRow([
+        u.user.fullName,
+        u.user.employeeCode ?? '',
+        u.user.employeeType,
+        u.user.department ?? '',
+        u.user.position ?? '',
+        u.user.location ?? '',
+        u.totals.daysWorked,
+        secondsToExcelDuration(u.totals.grossSeconds),
+        secondsToExcelDuration(u.totals.breakSeconds),
+        secondsToExcelDuration(u.totals.netSeconds),
+        open,
+        invalid,
+        adjusted,
+      ]);
+      this.borderRow(row, durationCols);
+    }
+
+    // GRAND TOTAL — only meaningful columns populated (fixes stray values).
+    ws.addRow([]);
+    const g = report.grandTotal;
+    const grand = ws.addRow([
+      'GRAND TOTAL',
+      '',
+      '',
+      '',
+      '',
+      '',
+      g.daysWorked,
+      secondsToExcelDuration(g.grossSeconds),
+      secondsToExcelDuration(g.breakSeconds),
+      secondsToExcelDuration(g.netSeconds),
+      '',
+      '',
+      '',
+    ]);
+    grand.eachCell({ includeEmpty: true }, (cell, col) => {
+      cell.font = { bold: true };
+      cell.fill = AttendanceReportsService.GRAND_FILL;
+      cell.border = AttendanceReportsService.CELL_BORDER;
+      if (durationCols.includes(col)) {
+        cell.numFmt = AttendanceReportsService.DURATION_FMT;
+      }
+    });
+    this.autoWidth(ws, header);
+  }
+
+  private buildDailySummarySheet(wb: ExcelJS.Workbook, report: any) {
+    const header = [
+      'Employee Name',
+      'Employee Code',
+      'Cyprus Date',
+      'First Clock In',
+      'Final Clock Out',
+      'Sessions',
+      'Gross Duration',
+      'Break Duration',
+      'Net Duration',
+      'Status',
+    ];
+    const durationCols = [7, 8, 9];
+    const ws = wb.addWorksheet('Daily Summary', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    const headerRow = ws.addRow(header);
+    this.styleHeaderRow(headerRow);
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: header.length },
+    };
+
+    for (const u of report.users) {
+      for (const day of u.days) {
+        const status = day.hasOpenRecord
+          ? 'OPEN RECORD'
+          : day.statuses.length
+            ? day.statuses.join(', ')
+            : '';
+        const row = ws.addRow([
+          u.user.fullName,
+          u.user.employeeCode ?? '',
+          day.date,
+          day.firstClockIn ?? '',
+          day.finalClockOut ?? '',
+          day.completedCount,
+          secondsToExcelDuration(day.grossSeconds),
+          secondsToExcelDuration(day.breakSeconds),
+          secondsToExcelDuration(day.netSeconds),
+          status,
+        ]);
+        this.borderRow(row, durationCols);
+      }
+
+      // USER TOTAL — only meaningful columns populated.
+      const t = ws.addRow([
+        `${u.user.fullName} — USER TOTAL`,
+        '',
+        '',
+        '',
+        '',
+        u.totals.daysWorked,
+        secondsToExcelDuration(u.totals.grossSeconds),
+        secondsToExcelDuration(u.totals.breakSeconds),
+        secondsToExcelDuration(u.totals.netSeconds),
+        '',
+      ]);
+      t.eachCell({ includeEmpty: true }, (cell, col) => {
+        cell.font = { bold: true };
+        cell.fill = AttendanceReportsService.TOTAL_FILL;
+        cell.border = AttendanceReportsService.CELL_BORDER;
+        if (durationCols.includes(col)) {
+          cell.numFmt = AttendanceReportsService.DURATION_FMT;
+        }
+      });
+    }
+    this.autoWidth(ws, header);
+  }
+
+  private buildExceptionsSheet(wb: ExcelJS.Workbook, report: any) {
+    const header = [
+      'Employee Name',
+      'Employee Code',
+      'Cyprus Date',
+      'Attendance ID',
+      'Exception Type',
+      'Detail',
+    ];
+    const ws = wb.addWorksheet('Exceptions', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    const headerRow = ws.addRow(header);
+    this.styleHeaderRow(headerRow);
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: header.length },
+    };
+
+    for (const u of report.users) {
+      for (const day of u.days) {
+        for (const s of day.sessions) {
+          for (const code of s.statuses) {
+            const row = ws.addRow([
+              u.user.fullName,
+              u.user.employeeCode ?? '',
+              day.date,
+              s.id,
+              code,
+              `${s.clockInLocal ?? '-'} -> ${s.clockOutLocal ?? '-'}`,
+            ]);
+            row.eachCell({ includeEmpty: true }, (c) => {
+              c.border = AttendanceReportsService.CELL_BORDER;
+            });
+          }
+        }
+      }
+    }
+    this.autoWidth(ws, header);
+  }
+
+  private buildAppliedFiltersSheet(
+    wb: ExcelJS.Workbook,
+    report: any,
+    filters: ReportFilters,
+    generatedAt: string,
+  ) {
+    this.addSummarySheet(
+      wb,
+      [
+        ['Report', 'Advanced Attendance Report'],
+        ['Date From', report.dateFrom],
+        ['Date To', report.dateTo],
+        ['Period', report.period],
+        ['Applied Filters', this.describeFilters(filters)],
+        ['Total Employees', report.usersCount],
+        ['Total Days Worked', report.grandTotal.daysWorked],
+        ['Total Gross', report.grandTotal.grossDisplay],
+        ['Total Break', report.grandTotal.breakDisplay],
+        ['Total Net', report.grandTotal.netDisplay],
+        ['Break Policy', BREAK_POLICY_TEXT],
+        ['Timezone', REPORT_TZ],
+        ['Generated At', generatedAt],
+      ],
+      'Applied Filters',
+    );
+  }
+
+  // -------------------------------------------------------------------
+  // CSV exports (human-readable durations, formula-injection safe)
+  // -------------------------------------------------------------------
+
+  async buildAdvancedCsv(filters: ReportFilters): Promise<string> {
+    const report = await this.getAdvancedReport(filters);
+    const lines: string[] = [];
+    lines.push(
+      csvRow([
+        'Employee Name',
+        'Employee Code',
+        'Employee Type',
+        'Department',
+        'Position',
+        'Location',
+        'Cyprus Date',
+        'Clock In',
+        'Clock Out',
+        'Gross Duration',
+        'Gross Decimal Hours',
+        'Method In',
+        'Method Out',
+        'Clock-In Geolocation',
+        'Status',
+      ]),
+    );
+    for (const u of report.users) {
+      for (const day of u.days) {
+        for (const s of day.sessions) {
+          lines.push(
+            csvRow([
+              u.user.fullName,
+              u.user.employeeCode ?? '',
+              u.user.employeeType,
+              u.user.department ?? '',
+              u.user.position ?? '',
+              u.user.location ?? '',
+              day.date,
+              s.clockInLocal ?? '',
+              s.clockOutLocal ?? '',
+              formatDuration(s.durationSeconds),
+              secondsToDecimalHours(s.durationSeconds),
+              s.methodIn ?? '',
+              s.methodOut ?? '',
+              s.latitude != null && s.longitude != null
+                ? `${s.latitude} ${s.longitude}`
+                : '',
+              s.statuses.join(' | ') || (s.open ? 'OPEN RECORD' : 'OK'),
+            ]),
+          );
+        }
+      }
+    }
+    // Daily net summary block (net time is a per-day figure, not per session).
+    lines.push('');
+    lines.push(
+      csvRow([
+        'DAILY SUMMARY',
+        'Employee Code',
+        'Cyprus Date',
+        'Sessions',
+        'Gross Duration',
+        'Break Duration',
+        'Net Duration',
+        'Net Decimal Hours',
+        'Status',
+      ]),
+    );
+    for (const u of report.users) {
+      for (const day of u.days) {
+        lines.push(
+          csvRow([
+            u.user.fullName,
+            u.user.employeeCode ?? '',
+            day.date,
+            day.completedCount,
+            day.grossDisplay,
+            day.breakDisplay,
+            day.netDisplay,
+            secondsToDecimalHours(day.netSeconds),
+            day.hasOpenRecord ? 'OPEN RECORD' : day.statuses.join(' | '),
+          ]),
+        );
+      }
+    }
+    return lines.join('\r\n');
+  }
+
+  async buildAbsenceCsv(filters: ReportFilters): Promise<string> {
+    const report = await this.getAbsenceReport(filters);
+    const lines: string[] = [];
+    lines.push(
+      csvRow([
+        'Date',
+        'Employee Name',
+        'Email',
+        'Employee Code',
+        'Employee Type',
+        'Position',
+        'Department',
+        'Location',
+        'Status',
+      ]),
+    );
+    for (const r of report.rows) {
+      lines.push(
+        csvRow([
+          r.date,
+          r.fullName,
+          r.email ?? '',
+          r.employeeCode ?? '',
+          r.employeeType,
+          r.position ?? '',
+          r.department ?? '',
+          r.location ?? '',
+          r.status,
+        ]),
+      );
+    }
+    return lines.join('\r\n');
+  }
+
   // ----- ExcelJS style helpers -----
+
+  private nowTime(): string {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: REPORT_TZ,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date());
+  }
+
+  private borderRow(row: ExcelJS.Row, durationCols: number[]) {
+    row.eachCell({ includeEmpty: true }, (cell, col) => {
+      cell.border = AttendanceReportsService.CELL_BORDER;
+      if (durationCols.includes(col) && typeof cell.value === 'number') {
+        cell.numFmt = AttendanceReportsService.DURATION_FMT;
+      }
+    });
+  }
 
   private addTitle(
     ws: ExcelJS.Worksheet,
@@ -648,11 +1013,12 @@ export class AttendanceReportsService {
   private addSummarySheet(
     wb: ExcelJS.Workbook,
     rows: Array<[string, string | number]>,
+    sheetName = 'Summary',
   ) {
-    const ws = wb.addWorksheet('Summary');
+    const ws = wb.addWorksheet(sheetName);
     ws.mergeCells(1, 1, 1, 2);
     const title = ws.getCell(1, 1);
-    title.value = 'Summary';
+    title.value = sheetName;
     title.font = { size: 14, bold: true, color: { argb: 'FF1F3864' } };
     ws.addRow([]);
 
@@ -736,77 +1102,31 @@ export class AttendanceReportsService {
   }
 
   private parseRange(filters: ReportFilters) {
-    const today = this.localDate(new Date());
+    const today = cyprusDate(new Date());
     const defaultFrom = `${today.slice(0, 7)}-01`;
 
     const fromStr = filters.dateFrom?.trim() || defaultFrom;
     const toStr = filters.dateTo?.trim() || today;
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(fromStr) || !/^\d{4}-\d{2}-\d{2}$/.test(toStr)) {
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(fromStr) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(toStr)
+    ) {
       throw new BadRequestException('Dates must be in YYYY-MM-DD format');
     }
     if (fromStr > toStr) {
       throw new BadRequestException('dateFrom must be before dateTo');
     }
 
-    // Interpret the local dates generously: start a bit before local
-    // midnight and end a bit after, then rely on localDate() grouping.
+    // Widen the UTC query window so records near local midnight are captured,
+    // then rely on cyprusDate() grouping to assign each to the correct day.
     const from = new Date(`${fromStr}T00:00:00.000Z`);
-    from.setUTCHours(from.getUTCHours() - 14); // cover TZs ahead of UTC
+    from.setUTCHours(from.getUTCHours() - 14);
     const toExclusive = new Date(`${toStr}T00:00:00.000Z`);
     toExclusive.setUTCDate(toExclusive.getUTCDate() + 1);
     toExclusive.setUTCHours(toExclusive.getUTCHours() + 14);
 
     return { from, toExclusive, fromStr, toStr };
-  }
-
-  /** YYYY-MM-DD in the report timezone. */
-  private localDate(date: Date): string {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: REPORT_TZ,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(date);
-  }
-
-  /** HH:MM in the report timezone. */
-  private localTime(date: Date): string {
-    return new Intl.DateTimeFormat('en-GB', {
-      timeZone: REPORT_TZ,
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(date);
-  }
-
-  /** Monday-based week key for a YYYY-MM-DD date string. */
-  private weekKey(dateStr: string): string {
-    const d = new Date(`${dateStr}T00:00:00.000Z`);
-    const weekday = (d.getUTCDay() + 6) % 7; // 0 = Monday
-    d.setUTCDate(d.getUTCDate() - weekday);
-    return `Week of ${d.toISOString().slice(0, 10)}`;
-  }
-
-  private addToPeriod(
-    map: Map<string, PeriodTotal>,
-    key: string,
-    gross: number,
-    breakHours: number,
-    net: number,
-  ) {
-    const entry = map.get(key) ?? {
-      key,
-      grossHours: 0,
-      breakHours: 0,
-      netHours: 0,
-      daysWorked: 0,
-    };
-    entry.grossHours = this.round(entry.grossHours + gross);
-    entry.breakHours = this.round(entry.breakHours + breakHours);
-    entry.netHours = this.round(entry.netHours + net);
-    entry.daysWorked += 1;
-    map.set(key, entry);
   }
 
   /** All Monday-Friday dates between from and to (inclusive). */
@@ -823,9 +1143,5 @@ export class AttendanceReportsService {
       cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
     return days;
-  }
-
-  private round(value: number): number {
-    return Math.round(value * 100) / 100;
   }
 }
