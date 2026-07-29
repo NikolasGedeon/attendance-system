@@ -2,10 +2,11 @@ import { Module } from '@nestjs/common';
 import { AttendanceController } from './attendance.controller';
 import { AttendanceReportsService } from './attendance-reports.service';
 import { AttendanceService } from './attendance.service';
+import { ClockAttemptModule } from '../clock-attempt/clock-attempt.module';
 import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, ClockAttemptModule],
   controllers: [AttendanceController],
   providers: [AttendanceService, AttendanceReportsService],
 })

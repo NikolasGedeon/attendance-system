@@ -6,6 +6,8 @@ import { LocationsModule } from './locations/locations.module';
 import { UsersModule } from './users/users.module';
 import { KioskModule } from './kiosk/kiosk.module';
 import { KioskQrModule } from './kiosk-qr/kiosk-qr.module';
+import { KioskDevicesModule } from './kiosk-devices/kiosk-devices.module';
+import { ManagerModule } from './manager/manager.module';
 import { MobileTokenModule } from './mobile-token/mobile-token.module';
 import { PositionsModule } from './positions/positions.module';
 
@@ -18,6 +20,8 @@ import { PositionsModule } from './positions/positions.module';
     UsersModule,
     KioskModule,
     KioskQrModule,
+    KioskDevicesModule,
+    ManagerModule,
     PositionsModule,
     MobileTokenModule,
   ],

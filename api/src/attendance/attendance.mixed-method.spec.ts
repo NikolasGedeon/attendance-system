@@ -44,7 +44,13 @@ describe('Mixed-method attendance consistency', () => {
     let service: AttendanceService;
 
     beforeEach(() => {
-      service = new AttendanceService(prisma as unknown as PrismaService);
+      const clockAttemptsStub = {
+        resolveFailedClockIns: jest.fn().mockResolvedValue({ count: 0 }),
+      } as any;
+      service = new AttendanceService(
+        prisma as unknown as PrismaService,
+        clockAttemptsStub,
+      );
     });
 
     it('clock-out closes a CARD-opened record (no method filtering)', async () => {
@@ -108,9 +114,14 @@ describe('Mixed-method attendance consistency', () => {
 
     beforeEach(() => {
       const smsStub = { smsEnabled: false, devShowCode: false } as any;
+      const clockAttemptsStub = {
+        resolveFailedClockIns: jest.fn().mockResolvedValue({ count: 0 }),
+        recordFailedClockIn: jest.fn().mockResolvedValue({}),
+      } as any;
       service = new KioskService(
         prisma as unknown as PrismaService,
         smsStub,
+        clockAttemptsStub,
       );
     });
 
@@ -127,6 +138,7 @@ describe('Mixed-method attendance consistency', () => {
       const result = await (service as any).performAttendanceAction({
         userId: 'u1',
         kioskId: 'k1',
+        locationId: 'k-loc',
         action: AttendanceOtpAction.CLOCK_OUT,
         method: AttendanceMethod.CARD,
       });
@@ -165,6 +177,7 @@ describe('Mixed-method attendance consistency', () => {
         (service as any).performAttendanceAction({
           userId: 'u1',
           kioskId: 'k1',
+          locationId: 'k-loc',
           action: AttendanceOtpAction.CLOCK_IN,
           method: AttendanceMethod.CARD,
         }),
@@ -178,6 +191,7 @@ describe('Mixed-method attendance consistency', () => {
         (service as any).performAttendanceAction({
           userId: 'u1',
           kioskId: 'k1',
+          locationId: 'k-loc',
           action: AttendanceOtpAction.CLOCK_OUT,
           method: AttendanceMethod.CARD,
         }),

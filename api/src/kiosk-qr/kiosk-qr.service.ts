@@ -11,6 +11,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
+import { ClockAttemptService } from '../clock-attempt/clock-attempt.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -23,7 +24,10 @@ const CHALLENGE_TTL_SECONDS = 25;
 
 @Injectable()
 export class KioskQrService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly clockAttempts: ClockAttemptService,
+  ) {}
 
   private hashToken(token: string): string {
     return createHash('sha256').update(token).digest('hex');
@@ -139,6 +143,14 @@ export class KioskQrService {
       throw new BadRequestException('This kiosk is inactive. Contact admin.');
     }
 
+    // A kiosk with no assigned location cannot record where the event
+    // happened, so it must not process attendance.
+    if (!challenge.kiosk.locationId) {
+      throw new BadRequestException(
+        'This kiosk is not assigned to a work location. Contact admin.',
+      );
+    }
+
     if (challenge.usedAt) {
       throw new BadRequestException(
         'This QR code was already used. Wait for the kiosk to show a fresh one.',
@@ -199,6 +211,8 @@ export class KioskQrService {
                 clockOut: now,
                 methodOut: AttendanceMethod.MOBILE_QR,
                 kioskOutId: challenge.kioskId,
+                // Actual clock-out location resolved from the kiosk device.
+                clockOutLocationId: challenge.kiosk.locationId,
               },
             })
           : await tx.attendance.create({
@@ -207,6 +221,8 @@ export class KioskQrService {
                 clockIn: now,
                 methodIn: AttendanceMethod.MOBILE_QR,
                 kioskInId: challenge.kioskId,
+                // Actual clock-in location resolved from the kiosk device.
+                clockInLocationId: challenge.kiosk.locationId,
               },
             });
 
@@ -214,6 +230,15 @@ export class KioskQrService {
           where: { id: challenge.id },
           data: { action },
         });
+
+        // A successful clock-in resolves any outstanding failed-attempt run.
+        if (action === AttendanceOtpAction.CLOCK_IN) {
+          await this.clockAttempts.resolveFailedClockIns(
+            userId,
+            attendance.id,
+            tx,
+          );
+        }
 
         return { action, attendance };
       });

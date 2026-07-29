@@ -49,6 +49,7 @@ model User {
   passwordResetTokens   PasswordResetToken[]
   refreshTokens         RefreshToken[]
   securityTokens        UserSecurityToken[]
+  clockAttempts         ClockAttempt[]
   location              Location?                 @relation(fields: [locationId], references: [id])
   position              Position?                 @relation(fields: [positionId], references: [id])
   devices               UserDevice[]
@@ -94,14 +95,24 @@ model Attendance {
   methodIn               AttendanceMethod?
   methodOut              AttendanceMethod?
   notes                  String?
+  // Actual clock-IN location (server-resolved). For kiosk events this is
+  // derived from the kiosk's own locationId — NOT the employee's assigned
+  // User.locationId, and NOT trusted from any client payload.
+  clockInLocationId      String?
   user                   User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   adjustmentLogs         AttendanceAdjustmentLog[]
+  clockInLocation        Location?                 @relation("AttendanceClockInLocation", fields: [clockInLocationId], references: [id])
+  clockOutLocation       Location?                 @relation("AttendanceClockOutLocation", fields: [clockOutLocationId], references: [id])
+  kioskIn                Kiosk?                    @relation("AttendanceKioskIn", fields: [kioskInId], references: [id])
+  kioskOut               Kiosk?                    @relation("AttendanceKioskOut", fields: [kioskOutId], references: [id])
 
   @@index([userId])
   @@index([clockIn])
   @@index([clockOut])
   @@index([kioskInId])
   @@index([kioskOutId])
+  @@index([clockInLocationId])
+  @@index([clockOutLocationId])
 }
 
 model AttendanceAdjustmentLog {
@@ -130,15 +141,19 @@ model AttendanceAdjustmentLog {
 }
 
 model Location {
-  id           String   @id @default(uuid())
-  name         String   @unique
-  latitude     Float
-  longitude    Float
-  radiusMeters Int      @default(150)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  users        User[]
+  id                  String         @id @default(uuid())
+  name                String         @unique
+  latitude            Float
+  longitude           Float
+  radiusMeters        Int            @default(150)
+  isActive            Boolean        @default(true)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  users               User[]
+  kiosks              Kiosk[]        @relation("KioskLocation")
+  clockInAttendances  Attendance[]   @relation("AttendanceClockInLocation")
+  clockOutAttendances Attendance[]   @relation("AttendanceClockOutLocation")
+  clockAttempts       ClockAttempt[]
 }
 
 model UserDevice {
@@ -156,15 +171,24 @@ model UserDevice {
 }
 
 model Kiosk {
-  id           String             @id @default(uuid())
-  name         String
-  location     String?
-  deviceKey    String             @unique
-  isActive     Boolean            @default(true)
-  lastSeenAt   DateTime?
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
-  qrChallenges KioskQrChallenge[]
+  id                  String             @id @default(uuid())
+  name                String
+  // Legacy free-text label (kept for backward compatibility). The
+  // authoritative physical location is `locationId` / `locationRef`.
+  location            String?
+  locationId          String?
+  deviceKey           String             @unique
+  isActive            Boolean            @default(true)
+  lastSeenAt          DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  qrChallenges        KioskQrChallenge[]
+  locationRef         Location?          @relation("KioskLocation", fields: [locationId], references: [id])
+  clockInAttendances  Attendance[]       @relation("AttendanceKioskIn")
+  clockOutAttendances Attendance[]       @relation("AttendanceKioskOut")
+  clockAttempts       ClockAttempt[]
+
+  @@index([locationId])
 }
 
 /// Short-lived, single-use challenge displayed as a QR on the kiosk and
@@ -289,6 +313,50 @@ model AuditLog {
   @@index([entityId])
 }
 
+/// Every kiosk clock attempt (success or failure). Failed CLOCK_IN attempts
+/// are the qualifying signal for the manager clock-in override. `resolvedAt`
+/// is set when a later successful clock-in (or a manager override) resolves
+/// the sequence so it can never be reused. `action` reuses AttendanceOtpAction.
+model ClockAttempt {
+  id           String              @id @default(uuid())
+  userId       String
+  kioskId      String?
+  locationId   String?
+  action       AttendanceOtpAction
+  successful   Boolean
+  reason       String?
+  resolvedAt   DateTime?
+  resolvedById String?
+  attemptedAt  DateTime            @default(now())
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kiosk        Kiosk?              @relation(fields: [kioskId], references: [id], onDelete: SetNull)
+  location     Location?           @relation(fields: [locationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, attemptedAt])
+  @@index([locationId, attemptedAt])
+  @@index([userId, action, successful, resolvedAt])
+}
+
+/// Permanent audit of a manager clock-in override. Intentionally stores plain
+/// ids (no cascading relations) so the audit trail is NEVER deleted when an
+/// attendance record is later edited or removed.
+model ManagerOverrideAudit {
+  id                       String              @id @default(uuid())
+  employeeId               String
+  managerId                String
+  attendanceId             String?
+  locationId               String?
+  action                   AttendanceOtpAction @default(CLOCK_IN)
+  reason                   String
+  qualifyingFailedAttempts Int
+  failedAttemptIds         Json?
+  createdAt                DateTime            @default(now())
+
+  @@index([employeeId])
+  @@index([managerId])
+  @@index([attendanceId])
+}
+
 enum Role {
   ADMIN
   MANAGER
@@ -305,6 +373,8 @@ enum AttendanceMethod {
   CARD
   MOBILE_QR
   MANUAL
+  MANAGER_OVERRIDE
+  ADMIN_OVERRIDE
 }
 
 enum AttendanceOtpAction {

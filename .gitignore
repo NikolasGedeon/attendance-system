@@ -15,3 +15,5 @@ azure-source/
 appservice-logs/
 
 .env.docker
+
+*.apk

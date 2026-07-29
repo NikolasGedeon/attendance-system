@@ -83,6 +83,13 @@ export class AttendanceReportsService {
             location: { select: { name: true } },
           },
         },
+        // Actual (server-resolved) event locations and kiosks used, for the
+        // per-session drill-down. `user.location` above is the ASSIGNED
+        // workplace; these are where the event actually happened.
+        clockInLocation: { select: { name: true } },
+        clockOutLocation: { select: { name: true } },
+        kioskIn: { select: { name: true } },
+        kioskOut: { select: { name: true } },
       },
       orderBy: { clockIn: 'asc' },
     });
@@ -168,6 +175,20 @@ export class AttendanceReportsService {
           methods: agg.methods,
           statuses: agg.statuses,
           sessions: agg.sessions,
+          // Per-session actual location + kiosk drill-down (additive; the
+          // aggregation totals above are unchanged). assignedLocation is
+          // reported at the user level (user.location).
+          sessionsDetail: entry.days.get(date)!.map((r) => ({
+            id: r.id,
+            clockIn: r.clockIn,
+            clockOut: r.clockOut,
+            clockInMethod: r.methodIn,
+            clockOutMethod: r.methodOut,
+            actualClockInLocation: r.clockInLocation?.name ?? null,
+            actualClockOutLocation: r.clockOutLocation?.name ?? null,
+            clockInKiosk: r.kioskIn?.name ?? null,
+            clockOutKiosk: r.kioskOut?.name ?? null,
+          })),
         });
 
         this.addToPeriod(weekTotals, weekKeyOf(date), agg);

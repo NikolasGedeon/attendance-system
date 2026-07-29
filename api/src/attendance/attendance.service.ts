@@ -5,12 +5,16 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { ClockAttemptService } from '../clock-attempt/clock-attempt.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ClockOutDto } from './dto/clock-out.dto';
 
 @Injectable()
 export class AttendanceService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly clockAttempts: ClockAttemptService,
+  ) {}
 
   private getHoursOpen(clockIn: Date) {
     const now = new Date();
@@ -252,6 +256,9 @@ export class AttendanceService {
           clockIn: new Date(),
           latitude,
           longitude,
+          // For a geofenced mobile clock-in the actual location IS the
+          // employee's validated assigned location.
+          clockInLocationId: locationValidation.assignedLocation.id,
         },
       });
     } catch (error) {
@@ -268,6 +275,10 @@ export class AttendanceService {
       }
       throw error;
     }
+
+    // A successful clock-in (any method) resolves any outstanding failed
+    // CLOCK_IN sequence so a manager override can no longer be triggered.
+    await this.clockAttempts.resolveFailedClockIns(userId, attendance.id);
 
     return {
       ...this.formatAttendanceRecord(attendance),
@@ -415,6 +426,11 @@ export class AttendanceService {
             location: true,
           },
         },
+        // Actual event locations + kiosks (assigned workplace is user.location).
+        clockInLocation: { select: { id: true, name: true } },
+        clockOutLocation: { select: { id: true, name: true } },
+        kioskIn: { select: { id: true, name: true } },
+        kioskOut: { select: { id: true, name: true } },
       },
       orderBy: {
         clockIn: 'desc',

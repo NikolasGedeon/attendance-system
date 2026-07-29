@@ -11,6 +11,7 @@ import {
   Role,
 } from '@prisma/client';
 import { createHash, randomInt } from 'crypto';
+import { ClockAttemptService } from '../clock-attempt/clock-attempt.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SmsService } from '../sms/sms.service';
 import { AdminClearCardLockDto } from './dto/admin-clear-card-lock.dto';
@@ -25,6 +26,7 @@ export class KioskService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly smsService: SmsService,
+    private readonly clockAttempts: ClockAttemptService,
   ) {}
 
   private trim(value: string) {
@@ -113,12 +115,23 @@ export class KioskService {
   private async performAttendanceAction(params: {
     userId: string;
     kioskId: string;
+    // Server-resolved kiosk location. Required: a kiosk with no assigned
+    // location must never process attendance (it cannot record where the
+    // event actually happened). NEVER the employee's assigned location.
+    locationId: string | null;
     action: AttendanceOtpAction;
     method: AttendanceMethod;
     notes?: string;
     isEdited?: boolean;
   }) {
-    const { userId, kioskId, action, method, notes, isEdited } = params;
+    const { userId, kioskId, locationId, action, method, notes, isEdited } =
+      params;
+
+    if (!locationId) {
+      throw new BadRequestException(
+        'This kiosk is not assigned to a work location. Please contact admin.',
+      );
+    }
 
     if (action === AttendanceOtpAction.CLOCK_IN) {
       const openAttendance = await this.prisma.attendance.findFirst({
@@ -135,13 +148,16 @@ export class KioskService {
         throw new BadRequestException('User is already clocked in');
       }
 
+      let created;
       try {
-        return await this.prisma.attendance.create({
+        created = await this.prisma.attendance.create({
           data: {
             userId,
             clockIn: new Date(),
             methodIn: method,
             kioskInId: kioskId,
+            // Actual clock-in location resolved from the kiosk device.
+            clockInLocationId: locationId,
             notes,
             isEdited: isEdited ?? false,
           },
@@ -156,6 +172,10 @@ export class KioskService {
         }
         throw error;
       }
+
+      // A successful clock-in resolves any outstanding failed-attempt sequence.
+      await this.clockAttempts.resolveFailedClockIns(userId, created.id);
+      return created;
     }
 
     const openAttendance = await this.prisma.attendance.findFirst({
@@ -180,6 +200,9 @@ export class KioskService {
         clockOut: new Date(),
         methodOut: method,
         kioskOutId: kioskId,
+        // Actual clock-out location resolved from the kiosk device (may differ
+        // from the clock-in kiosk/location).
+        clockOutLocationId: locationId,
         notes,
         isEdited: isEdited ?? openAttendance.isEdited,
       },
@@ -372,6 +395,7 @@ export class KioskService {
     const attendance = await this.performAttendanceAction({
       userId: user.id,
       kioskId: kiosk.id,
+      locationId: kiosk.locationId,
       action,
       method: AttendanceMethod.CARD,
     });
@@ -449,6 +473,7 @@ export class KioskService {
     const attendance = await this.performAttendanceAction({
       userId: user.id,
       kioskId: kiosk.id,
+      locationId: kiosk.locationId,
       action,
       method: AttendanceMethod.MOBILE_QR,
     });
@@ -536,6 +561,16 @@ export class KioskService {
 
       const failure = await this.incrementOtpFailure(otp.userId);
 
+      // Only failed CLOCK_IN attempts feed the manager override rule.
+      if (otp.action === AttendanceOtpAction.CLOCK_IN) {
+        await this.clockAttempts.recordFailedClockIn({
+          userId: otp.userId,
+          kioskId: kiosk.id,
+          locationId: kiosk.locationId,
+          reason: 'CARD_OTP_FAILED',
+        });
+      }
+
       throw new BadRequestException({
         message: failure.locked
           ? 'OTP failed 3 times. Please contact admin.'
@@ -560,6 +595,16 @@ export class KioskService {
       });
 
       const failure = await this.incrementOtpFailure(otp.userId);
+
+      // Only failed CLOCK_IN attempts feed the manager override rule.
+      if (otp.action === AttendanceOtpAction.CLOCK_IN) {
+        await this.clockAttempts.recordFailedClockIn({
+          userId: otp.userId,
+          kioskId: kiosk.id,
+          locationId: kiosk.locationId,
+          reason: 'CARD_OTP_FAILED',
+        });
+      }
 
       throw new BadRequestException({
         message: failure.locked
@@ -591,6 +636,7 @@ export class KioskService {
     const attendance = await this.performAttendanceAction({
       userId: otp.userId,
       kioskId: kiosk.id,
+      locationId: kiosk.locationId,
       action: otp.action,
       method: AttendanceMethod.CARD,
     });
@@ -711,6 +757,7 @@ export class KioskService {
     const attendance = await this.performAttendanceAction({
       userId: employee.id,
       kioskId: kiosk.id,
+      locationId: kiosk.locationId,
       action,
       method: AttendanceMethod.MANUAL,
       notes: dto.reason,

@@ -8,6 +8,7 @@ import '../services/attendance_service.dart';
 import '../services/auth_service.dart';
 import '../services/location_service.dart';
 import 'admin/admin_dashboard_screen.dart';
+import 'manager/live_attendance_screen.dart';
 import 'login_screen.dart';
 import 'mobile/mobile_token_screen.dart';
 import 'mobile/scan_kiosk_qr_screen.dart';
@@ -171,7 +172,18 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       appBar: AppBar(
         title: const Text('Attendance'),
         actions: [
-          if (widget.user.isAdminOrManager)
+          // Managers get a dedicated Live Attendance screen (not the admin
+          // tools). Admins get both.
+          if (widget.user.isManager || widget.user.isAdmin)
+            IconButton(
+              icon: const Icon(Icons.groups),
+              tooltip: 'Live Attendance',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                    builder: (_) => const LiveAttendanceScreen()),
+              ),
+            ),
+          if (widget.user.isAdmin)
             IconButton(
               icon: const Icon(Icons.admin_panel_settings),
               tooltip: 'Admin',

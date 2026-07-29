@@ -40,7 +40,14 @@ function makeService(opts: {
       ),
     },
   };
-  return { service: new AttendanceService(prisma), update, prisma };
+  const clockAttempts = {
+    resolveFailedClockIns: jest.fn().mockResolvedValue({ count: 0 }),
+  } as any;
+  return {
+    service: new AttendanceService(prisma, clockAttempts),
+    update,
+    prisma,
+  };
 }
 
 const nowIso = () => new Date().toISOString();
