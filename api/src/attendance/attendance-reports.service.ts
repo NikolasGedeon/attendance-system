@@ -23,6 +23,7 @@ export interface ReportFilters {
   userId?: string;
   search?: string;
   locationId?: string;
+  companyId?: string;
   employeeType?: string;
   position?: string;
   department?: string;
@@ -37,6 +38,7 @@ export interface ReportUserInfo {
   position: string | null;
   department: string | null;
   location: string | null;
+  company: string | null;
 }
 
 /** Amounts carried at day / period / total / grand levels (integer seconds + BC decimals). */
@@ -81,6 +83,7 @@ export class AttendanceReportsService {
             department: true,
             position: { select: { name: true } },
             location: { select: { name: true } },
+            company: { select: { name: true } },
           },
         },
         // Actual (server-resolved) event locations and kiosks used, for the
@@ -113,6 +116,7 @@ export class AttendanceReportsService {
             position: record.user.position?.name ?? null,
             department: record.user.department,
             location: record.user.location?.name ?? null,
+            company: record.user.company?.name ?? null,
           },
           days: new Map(),
         };
@@ -242,6 +246,7 @@ export class AttendanceReportsService {
         department: true,
         position: { select: { name: true } },
         location: { select: { name: true } },
+        company: { select: { name: true } },
       },
       orderBy: { fullName: 'asc' },
     });
@@ -270,6 +275,7 @@ export class AttendanceReportsService {
       position: string | null;
       department: string | null;
       location: string | null;
+      company: string | null;
       status: 'ABSENT';
     }> = [];
 
@@ -286,6 +292,7 @@ export class AttendanceReportsService {
             position: user.position?.name ?? null,
             department: user.department,
             location: user.location?.name ?? null,
+            company: user.company?.name ?? null,
             status: 'ABSENT',
           });
         }
@@ -439,6 +446,7 @@ export class AttendanceReportsService {
       'Position',
       'Department',
       'Location',
+      'Company',
       'Status',
     ];
 
@@ -471,12 +479,13 @@ export class AttendanceReportsService {
         r.position ?? '',
         r.department ?? '',
         r.location ?? '',
+        r.company ?? '',
         r.status,
       ]);
       row.eachCell({ includeEmpty: true }, (cell) => {
         cell.border = AttendanceReportsService.CELL_BORDER;
       });
-      const statusCell = row.getCell(9);
+      const statusCell = row.getCell(10);
       statusCell.font = { bold: true, color: { argb: 'FF9C0006' } };
       statusCell.fill = {
         type: 'pattern',
@@ -572,6 +581,7 @@ export class AttendanceReportsService {
       'Department',
       'Position',
       'Location',
+      'Company',
       'Cyprus Date',
       'Clock In',
       'Clock Out',
@@ -584,7 +594,7 @@ export class AttendanceReportsService {
       'Status',
       'Adjustment Status',
     ];
-    const durationCols = [10];
+    const durationCols = [11];
     const ws = wb.addWorksheet('Attendance Detail', {
       views: [{ state: 'frozen', ySplit: 1 }],
     });
@@ -609,6 +619,7 @@ export class AttendanceReportsService {
             u.user.department ?? '',
             u.user.position ?? '',
             u.user.location ?? '',
+            u.user.company ?? '',
             day.date,
             s.clockInLocal ?? '',
             s.clockOutLocal ?? '',
@@ -636,6 +647,7 @@ export class AttendanceReportsService {
       'Department',
       'Position',
       'Location',
+      'Company',
       'Days With Attendance',
       'Gross Duration',
       'Break Duration',
@@ -644,7 +656,7 @@ export class AttendanceReportsService {
       'Invalid Records',
       'Adjusted Records',
     ];
-    const durationCols = [8, 9, 10];
+    const durationCols = [9, 10, 11];
     const ws = wb.addWorksheet('Employee Summary', {
       views: [{ state: 'frozen', ySplit: 1 }],
     });
@@ -671,6 +683,7 @@ export class AttendanceReportsService {
         u.user.department ?? '',
         u.user.position ?? '',
         u.user.location ?? '',
+        u.user.company ?? '',
         u.totals.daysWorked,
         secondsToExcelDuration(u.totals.grossSeconds),
         secondsToExcelDuration(u.totals.breakSeconds),
@@ -687,6 +700,7 @@ export class AttendanceReportsService {
     const g = report.grandTotal;
     const grand = ws.addRow([
       'GRAND TOTAL',
+      '',
       '',
       '',
       '',
@@ -865,6 +879,7 @@ export class AttendanceReportsService {
         'Department',
         'Position',
         'Location',
+        'Company',
         'Cyprus Date',
         'Clock In',
         'Clock Out',
@@ -887,6 +902,7 @@ export class AttendanceReportsService {
               u.user.department ?? '',
               u.user.position ?? '',
               u.user.location ?? '',
+              u.user.company ?? '',
               day.date,
               s.clockInLocal ?? '',
               s.clockOutLocal ?? '',
@@ -951,6 +967,7 @@ export class AttendanceReportsService {
         'Position',
         'Department',
         'Location',
+        'Company',
         'Status',
       ]),
     );
@@ -965,6 +982,7 @@ export class AttendanceReportsService {
           r.position ?? '',
           r.department ?? '',
           r.location ?? '',
+          r.company ?? '',
           r.status,
         ]),
       );
@@ -1058,6 +1076,7 @@ export class AttendanceReportsService {
     if (filters.search?.trim()) parts.push(`search="${filters.search.trim()}"`);
     if (filters.userId) parts.push(`userId=${filters.userId}`);
     if (filters.locationId) parts.push(`locationId=${filters.locationId}`);
+    if (filters.companyId) parts.push(`companyId=${filters.companyId}`);
     if (filters.employeeType) parts.push(`type=${filters.employeeType}`);
     if (filters.position?.trim()) parts.push(`position=${filters.position.trim()}`);
     if (filters.department?.trim()) {
@@ -1078,6 +1097,12 @@ export class AttendanceReportsService {
     }
     if (filters.locationId) {
       where.locationId = filters.locationId;
+    }
+    if (filters.companyId) {
+      // Company report filter = the employee's CURRENT company. Combines with
+      // every other filter (AND). The point-in-time company snapshot lives on
+      // each Attendance record and powers the live dashboard.
+      where.companyId = filters.companyId;
     }
     if (filters.employeeType) {
       const type = filters.employeeType.trim().toUpperCase();

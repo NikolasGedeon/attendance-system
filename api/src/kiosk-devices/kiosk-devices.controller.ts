@@ -4,7 +4,6 @@ import {
   Get,
   Param,
   Patch,
-  Post,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -13,11 +12,17 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { AssignKioskLocationDto } from './assign-location.dto';
-import { CreateKioskDeviceDto } from './dto/create-kiosk-device.dto';
 import { UpdateKioskDeviceDto } from './dto/update-kiosk-device.dto';
 import { KioskDevicesService } from './kiosk-devices.service';
 
-/** ADMIN-only kiosk device management. */
+/**
+ * ADMIN-only management of EXISTING kiosk devices (list, rename, assign
+ * location, activate/deactivate). New kiosks are NOT created here — a tablet is
+ * enrolled through the universal-APK provisioning flow
+ * (POST /kiosk/register/* + POST /admin/kiosk-enrollments/:id/approve), which
+ * mints the device secret and delivers it only to the tablet. The full device
+ * key is never returned to an admin from any endpoint.
+ */
 @Controller('admin/kiosk-devices')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.ADMIN)
@@ -27,11 +32,6 @@ export class KioskDevicesController {
   @Get()
   list() {
     return this.service.list();
-  }
-
-  @Post()
-  create(@Request() req, @Body() dto: CreateKioskDeviceDto) {
-    return this.service.create(req.user.id, dto);
   }
 
   @Patch(':id')

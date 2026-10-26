@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -148,6 +149,11 @@ export class KioskService {
         throw new BadRequestException('User is already clocked in');
       }
 
+      // Historical company snapshot: the employee's company at clock-in time.
+      const emp = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { companyId: true },
+      });
       let created;
       try {
         created = await this.prisma.attendance.create({
@@ -158,6 +164,7 @@ export class KioskService {
             kioskInId: kioskId,
             // Actual clock-in location resolved from the kiosk device.
             clockInLocationId: locationId,
+            companyId: emp?.companyId ?? null,
             notes,
             isEdited: isEdited ?? false,
           },
@@ -291,11 +298,84 @@ export class KioskService {
     };
   }
 
+  /**
+   * A kiosk with no assigned location cannot record where an event happened,
+   * so it must be rejected as EARLY as possible — before any SMS OTP is sent
+   * or QR challenge is created (not only at the attendance write). Uses the
+   * same message as the write-time guard so existing behaviour is preserved.
+   */
+  private assertKioskHasLocation(kiosk: { locationId: string | null }) {
+    if (!kiosk.locationId) {
+      throw new BadRequestException(
+        'This kiosk is not assigned to a work location. Please contact admin.',
+      );
+    }
+  }
+
+  /**
+   * Kiosk startup self-identification (POST /kiosk/config). Resolves the kiosk
+   * server-side from its device key, rejects unknown/inactive kiosks, reports
+   * an explicit location-not-assigned state, refreshes lastSeenAt, and stores
+   * optional diagnostics. Never returns the device key.
+   */
+  async getKioskConfig(dto: {
+    kioskDeviceKey: string;
+    appVersion?: string;
+    deviceInfo?: string;
+  }) {
+    const deviceKey = this.trim(dto.kioskDeviceKey ?? '');
+    if (!deviceKey) {
+      throw new BadRequestException({
+        code: 'INVALID_KIOSK',
+        message: 'Kiosk device key is required.',
+      });
+    }
+    const kiosk = await this.prisma.kiosk.findUnique({ where: { deviceKey } });
+    if (!kiosk) {
+      throw new UnauthorizedException({
+        code: 'INVALID_KIOSK',
+        message: 'Unknown kiosk device key.',
+      });
+    }
+    if (!kiosk.isActive) {
+      throw new ForbiddenException({
+        code: 'KIOSK_INACTIVE',
+        message: 'This kiosk has been deactivated.',
+      });
+    }
+
+    const updated = await this.prisma.kiosk.update({
+      where: { id: kiosk.id },
+      data: {
+        lastSeenAt: new Date(),
+        ...(dto.appVersion !== undefined
+          ? { appVersion: dto.appVersion?.slice(0, 120) ?? null }
+          : {}),
+        ...(dto.deviceInfo !== undefined
+          ? { deviceInfo: dto.deviceInfo?.slice(0, 500) ?? null }
+          : {}),
+      },
+      include: { locationRef: { select: { id: true, name: true } } },
+    });
+
+    return {
+      id: updated.id,
+      name: updated.name,
+      locationId: updated.locationId,
+      locationName: updated.locationRef?.name ?? null,
+      locationAssigned: !!updated.locationId,
+      isActive: updated.isActive,
+      lastSeenAt: updated.lastSeenAt,
+    };
+  }
+
   async cardScan(dto: CardScanDto) {
     const cardUid = this.trim(dto.cardUid);
     const kioskDeviceKey = this.trim(dto.kioskDeviceKey);
 
     const kiosk = await this.getActiveKiosk(kioskDeviceKey);
+    // Fail before creating/sending an OTP if the kiosk has no location.
+    this.assertKioskHasLocation(kiosk);
     const user = await this.getUserByCard(cardUid);
 
     if (!user) {

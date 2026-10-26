@@ -57,6 +57,14 @@ export class KioskQrService {
   async createChallenge(kioskDeviceKey: string) {
     const kiosk = await this.getActiveKiosk(kioskDeviceKey);
 
+    // Reject a location-less kiosk BEFORE creating/displaying a QR challenge
+    // (the challenge can never result in a valid attendance write anyway).
+    if (!kiosk.locationId) {
+      throw new BadRequestException(
+        'This kiosk is not assigned to a work location. Contact admin.',
+      );
+    }
+
     // One active challenge per kiosk: drop unused ones.
     await this.prisma.kioskQrChallenge.deleteMany({
       where: { kioskId: kiosk.id, usedAt: null },
@@ -223,6 +231,8 @@ export class KioskQrService {
                 kioskInId: challenge.kioskId,
                 // Actual clock-in location resolved from the kiosk device.
                 clockInLocationId: challenge.kiosk.locationId,
+                // Historical company snapshot (user's company at clock-in).
+                companyId: user.companyId,
               },
             });
 

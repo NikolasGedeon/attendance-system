@@ -12,7 +12,17 @@ import {
   FAILED_CLOCK_IN_WINDOW_MINUTES,
 } from '../clock-attempt/clock-attempt.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { REPORT_TZ, cyprusTime } from '../attendance/report-policy.util';
 import { ManagerClockInDto } from './dto/manager-clock-in.dto';
+
+/** Filters accepted by the live dashboard. Company is the primary filter. */
+export interface LiveDashboardFilters {
+  companyId?: string;
+  locationId?: string;
+  type?: string; // ALL | CLOCK_IN | CLOCK_OUT
+  method?: string;
+  search?: string;
+}
 
 /**
  * Manager live attendance + limited clock-in override.
@@ -239,6 +249,232 @@ export class ManagerService {
     };
   }
 
+  /** [start, end) UTC instants for the Cyprus business day containing `now`. */
+  private cyprusDayBounds(now: Date = new Date()): { start: Date; end: Date } {
+    const dayStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: REPORT_TZ,
+    }).format(now); // YYYY-MM-DD
+    // DST-correct offset of REPORT_TZ for this instant.
+    const asUtc = new Date(now.toLocaleString('en-US', { timeZone: 'UTC' }));
+    const asTz = new Date(now.toLocaleString('en-US', { timeZone: REPORT_TZ }));
+    const offsetMs = asTz.getTime() - asUtc.getTime();
+    const [y, m, d] = dayStr.split('-').map(Number);
+    const startMs = Date.UTC(y, m - 1, d, 0, 0, 0) - offsetMs;
+    return { start: new Date(startMs), end: new Date(startMs + 86400000) };
+  }
+
+  private effectiveCompany(row: any): { id: string; name: string } | null {
+    if (row.companyId) {
+      return { id: row.companyId, name: row.company?.name ?? 'Company' };
+    }
+    // Legacy fallback: use the user's CURRENT company (display only).
+    if (row.user?.companyId) {
+      return {
+        id: row.user.companyId,
+        name: row.user.company?.name ?? 'Company',
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Optimized Live Attendance dashboard. Returns compact KPI totals, per-company
+   * totals (computed independently of the selected company so the guard can
+   * switch), the latest event, and a newest-first chronological event feed for
+   * today. KPI totals + feed reflect the active filters; company chips do not
+   * apply the company/location/type/method/search selection.
+   */
+  async getLiveDashboard(managerId: string, filters: LiveDashboardFilters) {
+    const ctx = await this.getManagerContext(managerId);
+    const { start, end } = this.cyprusDayBounds();
+
+    // Scope: ADMIN sees everyone; MANAGER only their location's users.
+    const scopeWhere: Prisma.AttendanceWhereInput =
+      ctx.role === Role.ADMIN
+        ? {}
+        : { userId: { in: await this.getScopedUserIds(ctx) } };
+
+    const include = {
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          companyId: true,
+          company: { select: { id: true, name: true } },
+        },
+      },
+      company: { select: { id: true, name: true } },
+      clockInLocation: { select: { id: true, name: true } },
+      clockOutLocation: { select: { id: true, name: true } },
+      kioskIn: { select: { id: true, name: true } },
+      kioskOut: { select: { id: true, name: true } },
+    } as const;
+
+    // Rows with a clock-in OR clock-out that falls in today, plus all open
+    // records (needed for Active Now even if opened on a previous day).
+    const [todayRows, openRows] = await Promise.all([
+      this.prisma.attendance.findMany({
+        where: {
+          ...scopeWhere,
+          OR: [
+            { clockIn: { gte: start, lt: end } },
+            { clockOut: { gte: start, lt: end } },
+          ],
+        },
+        include,
+        orderBy: { clockIn: 'desc' },
+      }),
+      this.prisma.attendance.findMany({
+        where: { ...scopeWhere, clockOut: null },
+        include,
+      }),
+    ]);
+
+    // ---- Expand today's rows into chronological events ----
+    type Ev = {
+      attendanceId: string;
+      employeeId: string;
+      employeeName: string;
+      type: 'CLOCK_IN' | 'CLOCK_OUT';
+      time: Date;
+      companyId: string | null;
+      companyName: string | null;
+      location: string | null;
+      method: string | null;
+      kiosk: string | null;
+    };
+    const events: Ev[] = [];
+    for (const r of todayRows) {
+      const company = this.effectiveCompany(r);
+      if (r.clockIn >= start && r.clockIn < end) {
+        events.push({
+          attendanceId: r.id,
+          employeeId: r.userId,
+          employeeName: r.user.fullName,
+          type: 'CLOCK_IN',
+          time: r.clockIn,
+          companyId: company?.id ?? null,
+          companyName: company?.name ?? null,
+          location: r.clockInLocation?.name ?? null,
+          method: r.methodIn ?? null,
+          kiosk: r.kioskIn?.name ?? null,
+        });
+      }
+      if (r.clockOut && r.clockOut >= start && r.clockOut < end) {
+        events.push({
+          attendanceId: r.id,
+          employeeId: r.userId,
+          employeeName: r.user.fullName,
+          type: 'CLOCK_OUT',
+          time: r.clockOut,
+          companyId: company?.id ?? null,
+          companyName: company?.name ?? null,
+          location: r.clockOutLocation?.name ?? null,
+          method: r.methodOut ?? null,
+          kiosk: r.kioskOut?.name ?? null,
+        });
+      }
+    }
+    events.sort((a, b) => b.time.getTime() - a.time.getTime());
+
+    // ---- Company chips: independent of company/location/type/method/search ----
+    const chip = new Map<
+      string,
+      { companyId: string; companyName: string; todayUsers: Set<string>; activeNow: number }
+    >();
+    for (const e of events) {
+      if (!e.companyId) continue;
+      const c = chip.get(e.companyId) ?? {
+        companyId: e.companyId,
+        companyName: e.companyName ?? 'Company',
+        todayUsers: new Set<string>(),
+        activeNow: 0,
+      };
+      c.todayUsers.add(e.employeeId);
+      chip.set(e.companyId, c);
+    }
+    for (const r of openRows) {
+      const company = this.effectiveCompany(r);
+      if (!company) continue;
+      const c = chip.get(company.id) ?? {
+        companyId: company.id,
+        companyName: company.name,
+        todayUsers: new Set<string>(),
+        activeNow: 0,
+      };
+      c.activeNow += 1;
+      chip.set(company.id, c);
+    }
+    const companies = Array.from(chip.values())
+      .map((c) => ({
+        companyId: c.companyId,
+        companyName: c.companyName,
+        activeNow: c.activeNow,
+        totalToday: c.todayUsers.size,
+      }))
+      .sort((a, b) => a.companyName.localeCompare(b.companyName));
+
+    // ---- Apply active filters to the feed + KPI totals ----
+    const q = filters.search?.trim().toLowerCase();
+    const typeF = (filters.type ?? 'ALL').toUpperCase();
+    const matchEvent = (e: Ev) =>
+      (!filters.companyId || e.companyId === filters.companyId) &&
+      (typeF === 'ALL' || e.type === typeF) &&
+      (!filters.method || e.method === filters.method) &&
+      (!q || e.employeeName.toLowerCase().includes(q));
+
+    // Location filter needs the id, not the name — recompute per event using
+    // the source row's location ids.
+    const rowLocIn = new Map(todayRows.map((r) => [r.id + ':CLOCK_IN', r.clockInLocationId]));
+    const rowLocOut = new Map(todayRows.map((r) => [r.id + ':CLOCK_OUT', r.clockOutLocationId]));
+    const matchesLocation = (e: Ev) => {
+      if (!filters.locationId) return true;
+      const locId =
+        e.type === 'CLOCK_IN'
+          ? rowLocIn.get(e.attendanceId + ':CLOCK_IN')
+          : rowLocOut.get(e.attendanceId + ':CLOCK_OUT');
+      return locId === filters.locationId;
+    };
+
+    const filtered = events.filter((e) => matchEvent(e) && matchesLocation(e));
+
+    const clockInsToday = filtered.filter((e) => e.type === 'CLOCK_IN').length;
+    const clockOutsToday = filtered.filter((e) => e.type === 'CLOCK_OUT').length;
+    const totalToday = new Set(filtered.map((e) => e.employeeId)).size;
+
+    // Active Now = open records, filtered by company/location where selected.
+    const activeNow = openRows.filter((r) => {
+      const company = this.effectiveCompany(r);
+      if (filters.companyId && company?.id !== filters.companyId) return false;
+      if (filters.locationId && r.clockInLocationId !== filters.locationId) {
+        return false;
+      }
+      return true;
+    }).length;
+
+    const toWire = (e: Ev) => ({
+      attendanceId: e.attendanceId,
+      employeeId: e.employeeId,
+      employeeName: e.employeeName,
+      type: e.type,
+      time: e.time,
+      timeLabel: cyprusTime(e.time),
+      companyId: e.companyId,
+      companyName: e.companyName,
+      location: e.location,
+      method: e.method,
+      kiosk: e.kiosk,
+    });
+
+    return {
+      summary: { activeNow, totalToday, clockInsToday, clockOutsToday },
+      companies,
+      latestEvent: filtered.length ? toWire(filtered[0]) : null,
+      events: filtered.slice(0, 200).map(toWire),
+      lastUpdatedAt: new Date().toISOString(),
+    };
+  }
+
   async managerClockIn(
     managerId: string,
     employeeId: string,
@@ -253,7 +489,7 @@ export class ManagerService {
 
     const employee = await this.prisma.user.findUnique({
       where: { id: employeeId },
-      select: { id: true, isActive: true, locationId: true },
+      select: { id: true, isActive: true, locationId: true, companyId: true },
     });
     if (!employee) throw new NotFoundException('Employee not found');
     if (!employee.isActive) {
@@ -312,6 +548,8 @@ export class ManagerService {
             clockIn: new Date(),
             methodIn: AttendanceMethod.MANAGER_OVERRIDE,
             clockInLocationId: eligible.locationId,
+            // Historical company snapshot (employee's company at clock-in).
+            companyId: employee.companyId ?? null,
             notes: `Manager override: ${reason}`,
             isEdited: true,
           },

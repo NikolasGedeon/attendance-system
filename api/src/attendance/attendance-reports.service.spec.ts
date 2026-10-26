@@ -118,14 +118,21 @@ describe('AttendanceReportsService.buildAdvancedWorkbook (Excel)', () => {
     );
 
     const emp = wb.getWorksheet('Employee Summary')!;
+    // Derive the Gross Duration column from the header so the assertion is
+    // robust to added columns (e.g. Company) rather than a fixed index.
+    const empGrossCol = (emp.getRow(1).values as unknown[]).findIndex(
+      (v) => v === 'Gross Duration',
+    );
+    expect(empGrossCol).toBeGreaterThan(0);
+
     let grandRow: any = null;
     emp.eachRow((row) => {
       if (row.getCell(1).value === 'GRAND TOTAL') grandRow = row;
     });
     expect(grandRow).not.toBeNull();
 
-    // Gross column (8) is a real number, formatted [h]:mm, and > 1 day (>24h).
-    const grossCell = grandRow.getCell(8);
+    // Gross grand total is a real number, formatted [h]:mm, and > 1 day (>24h).
+    const grossCell = grandRow.getCell(empGrossCol);
     expect(typeof grossCell.value).toBe('number');
     expect(grossCell.value).toBeGreaterThan(1); // 129600/86400 = 1.5
     expect(grossCell.numFmt).toBe('[h]:mm');
@@ -134,10 +141,15 @@ describe('AttendanceReportsService.buildAdvancedWorkbook (Excel)', () => {
     expect(grandRow.getCell(2).value == null || grandRow.getCell(2).value === '').toBe(true);
     expect(grandRow.getCell(5).value == null || grandRow.getCell(5).value === '').toBe(true);
 
-    // A per-session detail duration cell is numeric with [h]:mm.
+    // A per-session detail duration cell is numeric with [h]:mm — again
+    // derived from the header rather than a fixed column index.
     const detail = wb.getWorksheet('Attendance Detail')!;
+    const detailGrossCol = (detail.getRow(1).values as unknown[]).findIndex(
+      (v) => v === 'Gross Duration',
+    );
+    expect(detailGrossCol).toBeGreaterThan(0);
     const firstData = detail.getRow(2);
-    const durCell = firstData.getCell(10);
+    const durCell = firstData.getCell(detailGrossCol);
     expect(typeof durCell.value).toBe('number');
     expect(durCell.numFmt).toBe('[h]:mm');
 

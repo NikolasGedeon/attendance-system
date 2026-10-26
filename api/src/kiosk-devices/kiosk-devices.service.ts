@@ -1,21 +1,16 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { Kiosk, Location, Prisma } from '@prisma/client';
-import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateKioskDeviceDto } from './dto/create-kiosk-device.dto';
 import { UpdateKioskDeviceDto } from './dto/update-kiosk-device.dto';
 
 type KioskWithLocation = Kiosk & { locationRef?: Location | null };
 
 /**
- * ADMIN-only management of kiosk devices (tablets). Each device has a unique
- * deviceKey and belongs to a physical Location. The full deviceKey is returned
- * ONCE on creation (so the tablet can be provisioned) and never again — every
- * other response exposes only the last 4 characters.
+ * ADMIN-only management of EXISTING kiosk devices (tablets). Every response
+ * exposes only the LAST 4 characters of the device key — the full secret is
+ * never returned to an admin from any endpoint. New kiosks are created solely
+ * by the universal-APK enrollment flow (KioskEnrollmentService.approve), which
+ * mints the secret and delivers it only to the enrolling tablet.
  */
 @Injectable()
 export class KioskDevicesService {
@@ -71,48 +66,6 @@ export class KioskDevicesService {
       include: { locationRef: true },
     });
     return kiosks.map((k) => this.toResponse(k));
-  }
-
-  async create(actorUserId: string | null, dto: CreateKioskDeviceDto) {
-    if (dto.locationId) {
-      await this.requireLocation(dto.locationId);
-    }
-
-    const deviceKey = (dto.deviceKey ?? randomBytes(24).toString('hex')).trim();
-
-    let created: KioskWithLocation;
-    try {
-      created = await this.prisma.kiosk.create({
-        data: {
-          name: dto.name.trim(),
-          deviceKey,
-          locationId: dto.locationId ?? null,
-          location: dto.location?.trim() ?? null,
-        },
-        include: { locationRef: true },
-      });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        throw new BadRequestException('A kiosk with this device key already exists');
-      }
-      throw error;
-    }
-
-    await this.audit(actorUserId, 'KIOSK_DEVICE_CREATED', created.id, {
-      name: created.name,
-      locationId: created.locationId,
-    });
-
-    // Full deviceKey returned exactly once, so the tablet can be provisioned.
-    return {
-      ...this.toResponse(created),
-      deviceKey,
-      warning:
-        'Store this device key now. It is shown only once and cannot be retrieved later.',
-    };
   }
 
   async update(

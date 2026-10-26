@@ -3,6 +3,7 @@ import { AdminClearCardLockDto } from './dto/admin-clear-card-lock.dto';
 import { AdminManualClockDto } from './dto/admin-manual-clock.dto';
 import { AdminVerifyCardDto } from './dto/admin-verify-card.dto';
 import { CardScanDto } from './dto/card-scan.dto';
+import { KioskConfigDto } from './dto/kiosk-config.dto';
 import { MobileTokenScanDto } from './dto/mobile-token-scan.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { KioskService } from './kiosk.service';
@@ -14,6 +15,13 @@ import { KioskService } from './kiosk.service';
 @Controller('kiosk')
 export class KioskController {
   constructor(private readonly kioskService: KioskService) {}
+
+  /** Kiosk startup self-identification. Resolves identity + location from the
+   * device key server-side; the tablet never provides its own location. */
+  @Post('config')
+  config(@Body() dto: KioskConfigDto) {
+    return this.kioskService.getKioskConfig(dto);
+  }
 
   @Post('card-scan')
   cardScan(@Body() dto: CardScanDto) {

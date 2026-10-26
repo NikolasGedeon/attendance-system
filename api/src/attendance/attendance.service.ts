@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { AttendanceMethod, Prisma } from '@prisma/client';
 import { ClockAttemptService } from '../clock-attempt/clock-attempt.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ClockOutDto } from './dto/clock-out.dto';
@@ -248,6 +248,11 @@ export class AttendanceService {
       longitude,
     );
 
+    // Historical company snapshot: the employee's company at clock-in time.
+    const emp = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { companyId: true },
+    });
     let attendance;
     try {
       attendance = await this.prisma.attendance.create({
@@ -259,6 +264,9 @@ export class AttendanceService {
           // For a geofenced mobile clock-in the actual location IS the
           // employee's validated assigned location.
           clockInLocationId: locationValidation.assignedLocation.id,
+          companyId: emp?.companyId ?? null,
+          // Employee-app GPS clock-in (was previously left null).
+          methodIn: AttendanceMethod.MOBILE_GPS,
         },
       });
     } catch (error) {
@@ -341,6 +349,8 @@ export class AttendanceService {
       // `clockOut` is ALWAYS the server clock — never the phone-supplied time.
       data: {
         clockOut: new Date(),
+        // Employee-app GPS clock-out (was previously left null).
+        methodOut: AttendanceMethod.MOBILE_GPS,
         ...clockOutGeo,
       } as unknown as Prisma.AttendanceUpdateInput,
     });
@@ -560,7 +570,7 @@ export class AttendanceService {
     });
   }
 
-  async getMonthlyReport(year: number, month: number) {
+  async getMonthlyReport(year: number, month: number, companyId?: string) {
     if (!year || !month || month < 1 || month > 12) {
       throw new BadRequestException('Valid year and month are required');
     }
@@ -577,6 +587,8 @@ export class AttendanceService {
         clockOut: {
           not: null,
         },
+        // Company filter (employee's current company), combines with the range.
+        ...(companyId ? { user: { companyId } } : {}),
       },
       include: {
         user: {
@@ -586,6 +598,7 @@ export class AttendanceService {
             email: true,
             role: true,
             location: true,
+            company: { select: { id: true, name: true } },
           },
         },
       },
@@ -602,6 +615,7 @@ export class AttendanceService {
         email: string | null;
         role: string;
         location: any;
+        company: string | null;
         totalMinutes: number;
         totalHours: number;
         recordsCount: number;
@@ -630,6 +644,7 @@ export class AttendanceService {
           email: record.user.email,
           role: record.user.role,
           location: record.user.location,
+          company: record.user.company?.name ?? null,
           totalMinutes: workedMinutes,
           totalHours: Number((workedMinutes / 60).toFixed(2)),
           recordsCount: 1,
@@ -642,7 +657,7 @@ export class AttendanceService {
     );
   }
 
-  async getDailyReport(date: string) {
+  async getDailyReport(date: string, companyId?: string) {
     if (!date) {
       throw new BadRequestException('Date is required');
     }
@@ -666,6 +681,8 @@ export class AttendanceService {
           gte: from,
           lt: to,
         },
+        // Company filter (employee's current company), combines with the day.
+        ...(companyId ? { user: { companyId } } : {}),
       },
       include: {
         user: {
@@ -675,6 +692,7 @@ export class AttendanceService {
             email: true,
             role: true,
             location: true,
+            company: { select: { id: true, name: true } },
           },
         },
       },

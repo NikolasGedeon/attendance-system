@@ -42,6 +42,11 @@ export class UpdateUserDto {
   @IsEnum(EmployeeType)
   employeeType?: EmployeeType;
 
+  // string = assign company, null = clear company, undefined = no change.
+  @IsOptional()
+  @IsUUID()
+  companyId?: string | null;
+
   // Empty string clears the value.
   @IsOptional()
   @IsString()

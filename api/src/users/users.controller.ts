@@ -33,8 +33,11 @@ export class UsersController {
 
   /** ?status=active|inactive|all (default all) */
   @Get()
-  getUsers(@Query('status') status?: string) {
-    return this.usersService.getUsers(status);
+  getUsers(
+    @Query('status') status?: string,
+    @Query('companyId') companyId?: string,
+  ) {
+    return this.usersService.getUsers(status, companyId);
   }
 
   /**

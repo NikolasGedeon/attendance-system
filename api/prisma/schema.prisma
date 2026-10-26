@@ -32,6 +32,10 @@ model User {
   requireOtpForCard     Boolean                   @default(false)
   employeeType          EmployeeType              @default(INTERNAL)
   positionId            String?
+  // Company the user belongs to. Nullable so existing users stay valid;
+  // required for EXTERNAL users (enforced in application logic, not the DB,
+  // so legacy rows never break the migration).
+  companyId             String?
   mustChangePassword    Boolean                   @default(true)
   passwordChangedAt     DateTime?
   tokenVersion          Int                       @default(0)
@@ -52,12 +56,14 @@ model User {
   clockAttempts         ClockAttempt[]
   location              Location?                 @relation(fields: [locationId], references: [id])
   position              Position?                 @relation(fields: [positionId], references: [id])
+  company               Company?                  @relation(fields: [companyId], references: [id])
   devices               UserDevice[]
 
   @@index([locationId])
   @@index([cardUid])
   @@index([employeeCode])
   @@index([phoneNumber])
+  @@index([companyId])
   @@index([positionId])
 }
 
@@ -99,12 +105,18 @@ model Attendance {
   // derived from the kiosk's own locationId — NOT the employee's assigned
   // User.locationId, and NOT trusted from any client payload.
   clockInLocationId      String?
+  // Historical company snapshot: the company the employee belonged to WHEN
+  // this attendance record was created (clock-in). Reports attribute the shift
+  // to this company even if the user later moves companies. Nullable; legacy
+  // rows fall back to the user's current company for display only.
+  companyId              String?
   user                   User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   adjustmentLogs         AttendanceAdjustmentLog[]
   clockInLocation        Location?                 @relation("AttendanceClockInLocation", fields: [clockInLocationId], references: [id])
   clockOutLocation       Location?                 @relation("AttendanceClockOutLocation", fields: [clockOutLocationId], references: [id])
   kioskIn                Kiosk?                    @relation("AttendanceKioskIn", fields: [kioskInId], references: [id])
   kioskOut               Kiosk?                    @relation("AttendanceKioskOut", fields: [kioskOutId], references: [id])
+  company                Company?                  @relation(fields: [companyId], references: [id])
 
   @@index([userId])
   @@index([clockIn])
@@ -113,6 +125,7 @@ model Attendance {
   @@index([kioskOutId])
   @@index([clockInLocationId])
   @@index([clockOutLocationId])
+  @@index([companyId])
 }
 
 model AttendanceAdjustmentLog {
@@ -180,9 +193,13 @@ model Kiosk {
   deviceKey           String             @unique
   isActive            Boolean            @default(true)
   lastSeenAt          DateTime?
+  // Optional diagnostics reported by the kiosk on POST /kiosk/config.
+  appVersion          String?
+  deviceInfo          String?
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
   qrChallenges        KioskQrChallenge[]
+  enrollments         KioskEnrollment[]
   locationRef         Location?          @relation("KioskLocation", fields: [locationId], references: [id])
   clockInAttendances  Attendance[]       @relation("AttendanceKioskIn")
   clockOutAttendances Attendance[]       @relation("AttendanceKioskOut")
@@ -357,6 +374,24 @@ model ManagerOverrideAudit {
   @@index([attendanceId])
 }
 
+/// First-class company/organisation. External employees must belong to one
+/// (enforced in application logic). Companies are never hard-deleted while
+/// users or attendance reference them — deactivate instead. The optional
+/// relations use the Prisma default ON DELETE SET NULL, so removing a company
+/// (should it ever happen) never deletes users or attendance records.
+model Company {
+  id          String       @id @default(uuid())
+  name        String       @unique
+  shortName   String?
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  users       User[]
+  attendances Attendance[]
+
+  @@index([isActive])
+}
+
 enum Role {
   ADMIN
   MANAGER
@@ -375,6 +410,7 @@ enum AttendanceMethod {
   MANUAL
   MANAGER_OVERRIDE
   ADMIN_OVERRIDE
+  MOBILE_GPS
 }
 
 enum AttendanceOtpAction {
@@ -390,4 +426,45 @@ enum EmployeeType {
 enum SecurityTokenPurpose {
   ACCOUNT_ACTIVATION
   PASSWORD_RESET
+}
+
+/// Lifecycle of a self-service kiosk enrollment (universal APK). A freshly
+/// installed tablet requests a one-time registration code (PENDING). An admin
+/// assigns a name + Location and APPROVES it, at which point a device secret
+/// (Kiosk.deviceKey) is generated. The tablet fetches that secret exactly once
+/// and CONSUMES the enrollment. Codes expire and are single-use.
+enum KioskEnrollmentStatus {
+  PENDING
+  APPROVED
+  CONSUMED
+  REJECTED
+  EXPIRED
+}
+
+/// A pending/handled kiosk enrollment request. The registration code is never
+/// stored in plaintext — only its SHA-256 hash (`codeHash`) plus the last 4
+/// characters (`codeLast4`) for non-secret admin display. The device secret is
+/// the linked Kiosk.deviceKey and is delivered to the tablet only while the
+/// enrollment is APPROVED and not yet CONSUMED.
+model KioskEnrollment {
+  id            String                @id @default(uuid())
+  codeHash      String                @unique
+  codeLast4     String
+  status        KioskEnrollmentStatus @default(PENDING)
+  deviceModel   String?
+  deviceSerial  String?
+  appVersion    String?
+  kioskId       String?
+  approvedById  String?
+  approvedAt    DateTime?
+  consumedAt    DateTime?
+  expiresAt     DateTime
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  kiosk         Kiosk?                @relation(fields: [kioskId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([expiresAt])
+  @@index([kioskId])
+  @@index([deviceSerial])
 }

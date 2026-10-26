@@ -55,6 +55,8 @@ const userSelect = {
   position: true,
   locationId: true,
   location: true,
+  companyId: true,
+  company: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -157,14 +159,16 @@ export class UsersService {
     return { status, activationExpiresAt: expiresAt };
   }
 
-  async getUsers(status?: string) {
+  async getUsers(status?: string, companyId?: string) {
     const normalized = (status || 'all').toLowerCase();
-    const where =
-      normalized === 'active'
+    const where = {
+      ...(normalized === 'active'
         ? { isActive: true }
         : normalized === 'inactive'
           ? { isActive: false }
-          : {};
+          : {}),
+      ...(companyId ? { companyId } : {}),
+    };
 
     return this.prisma.user.findMany({
       where,
@@ -409,6 +413,11 @@ export class UsersService {
       await this.validatePosition(dto.positionId);
     }
 
+    const employeeType = dto.employeeType ?? EmployeeType.INTERNAL;
+    const companyId = dto.companyId ?? null;
+    await this.validateCompanyAssignment(companyId, null);
+    this.assertCompanyForEmployeeType(employeeType, companyId);
+
     const passwordHash = dto.password
       ? await bcrypt.hash(dto.password, 10)
       : null;
@@ -435,9 +444,10 @@ export class UsersService {
         cardAssignedAt: cardUid ? new Date() : null,
         requireOtpForCard: dto.requireOtpForCard ?? false,
         hasMobile: dto.hasMobile ?? false,
-        employeeType: dto.employeeType ?? EmployeeType.INTERNAL,
+        employeeType,
         positionId: dto.positionId ?? null,
         locationId: dto.locationId ?? null,
+        companyId,
       } as any,
       select: userSelect,
     });
@@ -559,6 +569,10 @@ export class UsersService {
       where: { isActive: true },
       orderBy: { name: 'asc' },
     });
+    const companies = await this.prisma.company.findMany({
+      where: { isActive: true },
+      orderBy: { name: 'asc' },
+    });
 
     const header = [
       'fullName',
@@ -570,6 +584,7 @@ export class UsersService {
       'position',
       'department',
       'locationName',
+      'company',
       'role',
       'isActive',
       'requireOtpForCard',
@@ -579,6 +594,7 @@ export class UsersService {
 
     const examplePosition = positions[0]?.name ?? 'Security Guard';
     const exampleLocation = locations[0]?.name ?? 'GAIA';
+    const exampleCompany = companies[0]?.name ?? 'AG Agathokleous';
 
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Attendance System';
@@ -617,6 +633,7 @@ export class UsersService {
         examplePosition,
         'Operations',
         exampleLocation,
+        '',
         'EMPLOYEE',
         'true',
         'false',
@@ -633,6 +650,7 @@ export class UsersService {
         examplePosition,
         'Operations',
         exampleLocation,
+        exampleCompany,
         'EMPLOYEE',
         'true',
         'true',
@@ -702,6 +720,10 @@ export class UsersService {
       ['position', positions.map((p) => p.name).join(', ') || '(none yet)'],
       ['department', 'Free text.'],
       ['locationName', locations.map((l) => l.name).join(', ') || '(none yet)'],
+      [
+        'company',
+        `${companies.map((c) => c.name).join(', ') || '(none yet)'}. Required for EXTERNAL employees.`,
+      ],
       ['role', 'ADMIN, MANAGER or EMPLOYEE (default EMPLOYEE)'],
       ['isActive', 'true or false (default true)'],
       ['requireOtpForCard', 'true or false (default false)'],
@@ -766,6 +788,10 @@ export class UsersService {
     const positionByName = new Map(
       positions.map((p) => [p.name.trim().toLowerCase(), p]),
     );
+    const companies = await this.prisma.company.findMany();
+    const companyByName = new Map(
+      companies.map((c) => [c.name.trim().toLowerCase(), c]),
+    );
 
     const existing = await this.prisma.user.findMany({
       select: { email: true, employeeCode: true, cardUid: true },
@@ -796,6 +822,7 @@ export class UsersService {
       const cardUid = String(raw.carduid ?? '').trim() || null;
       const locationName = String(raw.location ?? '').trim() || null;
       const positionName = String(raw.position ?? '').trim() || null;
+      const companyName = String(raw.company ?? '').trim() || null;
       const employeeTypeRaw = String(raw.employeetype ?? '')
         .trim()
         .toUpperCase();
@@ -886,6 +913,30 @@ export class UsersService {
         positionId = position.id;
       }
 
+      // Company: unknown or inactive → row-level error. External employees
+      // must resolve to a company.
+      let companyId: string | null = null;
+      if (companyName) {
+        const company = companyByName.get(companyName.toLowerCase());
+        if (!company) {
+          skip(`Unknown company: ${companyName}`);
+          continue;
+        }
+        if (!company.isActive) {
+          skip(`Company is inactive: ${companyName}`);
+          continue;
+        }
+        companyId = company.id;
+      }
+      const effectiveType =
+        employeeTypeRaw === 'EXTERNAL'
+          ? EmployeeType.EXTERNAL
+          : EmployeeType.INTERNAL;
+      if (effectiveType === EmployeeType.EXTERNAL && !companyId) {
+        skip('External employees must be assigned to a company');
+        continue;
+      }
+
       try {
         await this.prisma.user.create({
           data: {
@@ -905,12 +956,10 @@ export class UsersService {
             authMethod: authMethodRaw
               ? (authMethodRaw as AuthMethod)
               : AuthMethod.CARD,
-            employeeType:
-              employeeTypeRaw === 'EXTERNAL'
-                ? EmployeeType.EXTERNAL
-                : EmployeeType.INTERNAL,
+            employeeType: effectiveType,
             positionId,
             locationId,
+            companyId,
           },
         });
       } catch {
@@ -1016,6 +1065,16 @@ export class UsersService {
       await this.validatePosition(data.positionId);
     }
 
+    // Company: only changes when explicitly provided. Switching to INTERNAL
+    // does NOT clear the company (preserved unless the admin passes null).
+    if (data.companyId !== undefined) {
+      await this.validateCompanyAssignment(data.companyId, user.companyId);
+    }
+    const effectiveEmployeeType = data.employeeType ?? user.employeeType;
+    const effectiveCompanyId =
+      data.companyId !== undefined ? data.companyId : user.companyId;
+    this.assertCompanyForEmployeeType(effectiveEmployeeType, effectiveCompanyId);
+
     // Admin-assigned temporary password: hash it, force a change at next
     // login, and invalidate every existing session (tokenVersion bump +
     // refresh-token revocation).
@@ -1057,6 +1116,7 @@ export class UsersService {
         ...(data.employeeType !== undefined && {
           employeeType: data.employeeType,
         }),
+        ...(data.companyId !== undefined && { companyId: data.companyId }),
         ...(employeeCode !== undefined && { employeeCode }),
         ...(department !== undefined && { department }),
         ...(phoneNumber !== undefined && { phoneNumber }),
@@ -1180,6 +1240,44 @@ export class UsersService {
 
     if (!location.isActive) {
       throw new BadRequestException('Cannot assign inactive location');
+    }
+  }
+
+  /**
+   * Validates a company assignment. A new assignment must reference an ACTIVE
+   * company; an INACTIVE company is allowed ONLY when it is unchanged (so an
+   * existing user linked to a now-inactive company can still be edited).
+   * `null` clears the assignment.
+   */
+  private async validateCompanyAssignment(
+    companyId: string | null,
+    currentCompanyId: string | null,
+  ) {
+    if (companyId === null || companyId === undefined) return;
+
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+    });
+    if (!company) {
+      throw new NotFoundException('Company not found');
+    }
+    if (!company.isActive && companyId !== currentCompanyId) {
+      throw new BadRequestException('Cannot assign an inactive company');
+    }
+  }
+
+  /**
+   * EXTERNAL users must belong to a company; INTERNAL users may or may not.
+   * Enforced server-side so the rule holds regardless of the client.
+   */
+  private assertCompanyForEmployeeType(
+    employeeType: EmployeeType,
+    companyId: string | null,
+  ) {
+    if (employeeType === EmployeeType.EXTERNAL && !companyId) {
+      throw new BadRequestException(
+        'External employees must be assigned to a company',
+      );
     }
   }
 }

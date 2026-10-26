@@ -59,8 +59,25 @@ describe('Mixed-method attendance consistency', () => {
         ...openCardRecord,
         clockOut: new Date(),
       });
+      // Clock-out enforces geolocation (production behaviour, unchanged):
+      // supply valid coordinates and an assigned location the employee is
+      // standing inside so validation passes and the CARD-opened record closes.
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        location: {
+          id: 'l1',
+          name: 'HQ',
+          latitude: 34.7071,
+          longitude: 33.0226,
+          radiusMeters: 150,
+          isActive: true,
+        },
+      });
 
-      const result = await service.clockOut('u1');
+      const result = await service.clockOut('u1', {
+        latitude: 34.7071,
+        longitude: 33.0226,
+      });
 
       // The lookup must be strictly userId + open, nothing else.
       expect(prisma.attendance.findFirst).toHaveBeenCalledWith(

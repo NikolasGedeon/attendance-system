@@ -67,4 +67,10 @@ export class CreateUserDto {
   @IsOptional()
   @IsEnum(EmployeeType)
   employeeType?: EmployeeType;
+
+  // Company the user belongs to. Mandatory for EXTERNAL users (enforced in
+  // the service), optional for INTERNAL.
+  @IsOptional()
+  @IsUUID()
+  companyId?: string;
 }

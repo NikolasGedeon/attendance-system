@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -12,7 +13,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { ManagerClockInDto } from './dto/manager-clock-in.dto';
-import { ManagerService } from './manager.service';
+import { LiveDashboardFilters, ManagerService } from './manager.service';
 
 /**
  * Manager-only surface. Every route requires MANAGER or ADMIN; scope and
@@ -28,6 +29,12 @@ export class ManagerController {
   @Get('live-attendance')
   liveAttendance(@Request() req) {
     return this.managerService.getLiveAttendance(req.user.id);
+  }
+
+  /** Optimized real-time dashboard (KPIs, company chips, event feed). */
+  @Get('live-dashboard')
+  liveDashboard(@Request() req, @Query() query: LiveDashboardFilters) {
+    return this.managerService.getLiveDashboard(req.user.id, query);
   }
 
   @Get('failed-clock-attempts')

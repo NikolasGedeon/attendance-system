@@ -77,18 +77,23 @@ export class AttendanceController {
   getMonthlyReport(
     @Query('year') year: string,
     @Query('month') month: string,
+    @Query('companyId') companyId?: string,
   ) {
     return this.attendanceService.getMonthlyReport(
       Number(year),
       Number(month),
+      companyId,
     );
   }
 
   @Get('reports/daily')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.MANAGER)
-  getDailyReport(@Query('date') date: string) {
-    return this.attendanceService.getDailyReport(date);
+  getDailyReport(
+    @Query('date') date: string,
+    @Query('companyId') companyId?: string,
+  ) {
+    return this.attendanceService.getDailyReport(date, companyId);
   }
 
   @Get('reports/advanced')
