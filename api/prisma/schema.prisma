@@ -411,6 +411,9 @@ enum AttendanceMethod {
   MANAGER_OVERRIDE
   ADMIN_OVERRIDE
   MOBILE_GPS
+  /// Written only by AttendanceAutoCloseService when the nightly job closes a
+  /// shift the employee never clocked out of. Never accepted from a client.
+  AUTO_CLOSE
 }
 
 enum AttendanceOtpAction {

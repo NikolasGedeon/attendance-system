@@ -33,7 +33,11 @@ export type ExceptionCode =
   | 'OVERNIGHT_SHIFT'
   | 'OVERLAPPING_RECORDS'
   | 'MULTIPLE_RECORDS'
-  | 'MANUALLY_ADJUSTED';
+  | 'MANUALLY_ADJUSTED'
+  // Shift the employee never closed; clockOut was supplied by the nightly
+  // AttendanceAutoCloseService, not by the employee. Flagged so these hours
+  // are reviewed before they reach payroll.
+  | 'AUTO_CLOSED';
 
 const DATE_FMT = new Intl.DateTimeFormat('en-CA', {
   timeZone: REPORT_TZ,
@@ -158,6 +162,7 @@ export function classifySession(raw: RawSession): SessionResult {
     isEdited: raw.isEdited === true,
   };
   if (base.isEdited) statuses.push('MANUALLY_ADJUSTED');
+  if (base.methodOut === 'AUTO_CLOSE') statuses.push('AUTO_CLOSED');
 
   if (!raw.clockOut) {
     statuses.unshift('OPEN_RECORD');
